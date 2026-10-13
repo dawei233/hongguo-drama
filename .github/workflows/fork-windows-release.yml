@@ -56,8 +56,44 @@ jobs:
           name: windows-media-errors
           path: ${{ runner.temp }}/media/logs/
 
+  # 单元测试。放在 CI 而不是本地：本项目的验证依赖 clone 下来的依赖树，而维护这台
+  # 机器空间紧张；而且测试必须每次都跑，不能靠"本地记得跑一下"。
+  # windows 任务依赖它，测试不过就不出包。
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: 单元测试
+        shell: bash
+        run: |
+          set -uo pipefail
+          failed=0
+          # 逐个跑并汇总：一个文件挂掉不要带走其余文件的结论
+          for f in $(ls src/native/*.test.cjs src/components/__tests__/*.test.mjs); do
+            echo "::group::$f"
+            if node "$f"; then echo "✅ PASS $f"; else echo "::error::$f 失败"; failed=$((failed+1)); fi
+            echo "::endgroup::"
+          done
+          if [ "$failed" -ne 0 ]; then echo "::error::$failed 个测试文件失败"; exit 1; fi
+          echo "全部测试文件通过"
+      - name: 无界面的校验脚本
+        shell: bash
+        run: |
+          set -euo pipefail
+          for s in scripts/check-app-update.cjs scripts/check-app-source.cjs scripts/check-store.cjs scripts/check-streaming.cjs; do
+            echo "::group::$s"
+            node "$s"
+            echo "::endgroup::"
+          done
+
   windows:
-    needs: media
+    needs: [media, test]
     runs-on: windows-2022
     timeout-minutes: 40
     steps:
