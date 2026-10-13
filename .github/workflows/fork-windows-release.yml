@@ -117,7 +117,7 @@ jobs:
           path: |
             dist/win-unpacked
             dist/*.exe
-          key: fork-windows-dist-v2-${{ hashFiles('package*.json', 'main.js', 'preload.js', 'index.html', 'vite.config.js', 'src/**', 'build/**', 'scripts/build-ffmpeg-source-win.sh', '.github/workflows/fork-windows-release.yml') }}
+          key: fork-windows-dist-v3-${{ hashFiles('package*.json', 'main.js', 'preload.js', 'index.html', 'vite.config.js', 'src/**', 'build/**', 'scripts/build-ffmpeg-source-win.sh', '.github/workflows/fork-windows-release.yml') }}
       - shell: pwsh
         if: steps.portable-cache.outputs.cache-hit != 'true'
         run: |
@@ -126,8 +126,15 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           npm run build:react
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          # 一次调用同时出安装版与便携版：共享同一个打包中间产物，比跑两遍省一半时间
-          npx electron-builder --win nsis portable --x64 --publish never
+          # 安装版与便携版**必须分成两次调用**。
+          #
+          # 实测：写成一次 `--win nsis portable`，两个目标会共享同一份应用归档，而那份
+          # 归档用的压缩级别低于便携版单独构建时的级别 —— 产物从 106MB 涨到 126MB，
+          # 也就是白让用户多下 40MB。绿色版两次都是 182.7MB，可证应用体积没变、只是压缩
+          # 变差了。多花约 1~2 分钟换取每个目标各自最优的压缩，划算。
+          npx electron-builder --win portable --x64 --publish never
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npx electron-builder --win nsis --x64 --publish never
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
