@@ -41,17 +41,20 @@
 
 **当前正式版：1.72**。按你的设备选择一个文件即可，媒体工具已内置，无需另装 Node.js、Homebrew 或 FFmpeg。
 
-| 设备 | 下载 1.72 | 安装方式 |
+| 设备 | 下载 | 安装方式 |
 |---|---|---|
-| Apple 芯片 Mac（M 系列），macOS 13+ | [下载 DMG](https://github.com/jackotom/hongguo-drama/releases/download/v1.72/Hongguo-1.72-mac-arm64.dmg) | 打开 DMG，拖入「应用程序」后启动 |
-| Intel Mac，macOS 13+ | [下载 DMG](https://github.com/jackotom/hongguo-drama/releases/download/v1.72/Hongguo-1.72-mac-x64.dmg) | 打开 DMG，拖入「应用程序」后启动 |
-| Windows x64 | [下载 EXE](https://github.com/jackotom/hongguo-drama/releases/download/v1.72/hongguo-downloader-1.72.0-win-x64.exe) · [下载 ZIP](https://github.com/jackotom/hongguo-drama/releases/download/v1.72/hongguo-downloader-1.72.0-win-x64.zip) | 便携版，直接运行 EXE；ZIP 解压后运行同一程序 |
+| Windows x64 | [下载安装版 / 便携版 / 绿色版](https://github.com/dawei233/hongguo-drama/releases/latest) | 安装版：双击 Setup，有开始菜单与桌面快捷方式、可自选目录、可从「应用和功能」卸载。便携版：直接运行 EXE。绿色版：解压后运行同一程序 |
+| Apple 芯片 Mac（M 系列），macOS 13+ | 本 fork 只构建 Windows；请用[上游原版](https://github.com/jackotom/hongguo-drama/releases/latest) | 打开 DMG，拖入「应用程序」后启动 |
+| Intel Mac，macOS 13+ | 本 fork 只构建 Windows；请用[上游原版](https://github.com/jackotom/hongguo-drama/releases/latest) | 打开 DMG，拖入「应用程序」后启动 |
 
-[查看最新正式版](https://github.com/jackotom/hongguo-drama/releases/latest) · [1.72 更新说明与源码](https://github.com/jackotom/hongguo-drama/releases/tag/v1.72) · [SHA256 校验文件](https://github.com/jackotom/hongguo-drama/releases/download/v1.72/SHA256SUMS.txt)
+[查看本 fork 最新正式版](https://github.com/dawei233/hongguo-drama/releases/latest) · 产物含 `*-win-x64-setup.exe`（安装版）、`*-win-x64-portable.exe`（便携版）、`*-win-x64-green.zip`（绿色版）、对应源码与 `WINDOWS-SHA256SUMS.txt`
+
+> 注意：**本 fork 的下载一律以上面这个本仓库发行页为准。** 上游发行页的 Windows 包不含本 fork 的真弹幕功能。
 
 - **更新旧版**：先退出应用，再替换程序，保留原有用户资料目录。软件只提示更新，不会自动下载或安装。
-- **Mac**：1.72 两种架构的应用与 DMG 均已完成 Developer ID 签名、Apple 公证及票据装订；无需全局关闭 Gatekeeper。公证不等于 App Store 审核或内容授权。
-- **Windows**：EXE 尚未签名，可能出现系统安全提示。请核对下载来源；首次启动会展开临时运行文件，设置与观看记录仍保存在用户资料目录。
+- **Mac**：本 fork 不构建 macOS 包。上游 1.72 的两种架构应用与 DMG 均已完成 Developer ID 签名、Apple 公证及票据装订；无需全局关闭 Gatekeeper。公证不等于 App Store 审核或内容授权。
+- **Windows**：安装版与便携版均**未签名**，可能出现系统安全提示（安装版可能提示"未知发布者"）。请核对下载来源为[本仓库发行页](https://github.com/dawei233/hongguo-drama/releases/latest)；首次启动会展开临时运行文件，设置与观看记录仍保存在用户资料目录。
+- **安装版与便携版的关系**：可以共存，互不干扰。安装版按应用身份识别，升级时是覆盖安装而不是装出两份。两者共用同一份用户资料目录，所以设置与观看记录通用。
 - **普通使用只需安装包**：Assets 中的 `source` 文件和 GitHub 自动生成的 Source code 是源码，不能直接运行。
 
 本项目是社区维护的开源修改版，**不是红果、西饭或河马的官方客户端，也未获平台官方背书**。不提供付费分集解锁；剧集、清晰度和可用范围取决于来源平台。

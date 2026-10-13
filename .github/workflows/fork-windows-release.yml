@@ -106,21 +106,28 @@ jobs:
         with:
           name: windows-media
           path: media
-      # 源码没变就复用上次的产物，省一次完整打包
+      # 源码没变就复用上次的产物，省一次完整打包。
+      #
+      # 缓存键**必须包含本 workflow 文件**：构建产物取决于这里的构建命令，而不是只
+      # 取决于源码。曾经踩过：给构建命令加了一个目标（安装版）却没进缓存键，结果缓存
+      # 命中直接跳过构建，新目标根本没被产出，直到发版步骤找不到文件才报错。
       - uses: actions/cache/restore@v4
         id: portable-cache
         with:
           path: |
             dist/win-unpacked
             dist/*.exe
-          key: fork-windows-portable-v1-${{ hashFiles('package*.json', 'main.js', 'preload.js', 'index.html', 'vite.config.js', 'src/**', 'build/**', 'scripts/build-ffmpeg-source-win.sh') }}
+          key: fork-windows-dist-v2-${{ hashFiles('package*.json', 'main.js', 'preload.js', 'index.html', 'vite.config.js', 'src/**', 'build/**', 'scripts/build-ffmpeg-source-win.sh', '.github/workflows/fork-windows-release.yml') }}
       - shell: pwsh
         if: steps.portable-cache.outputs.cache-hit != 'true'
         run: |
           Copy-Item media/bin/* build/ffmpeg/ -Force
           npm ci --no-audit --no-fund
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          npm run build:portable
+          npm run build:react
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          # 一次调用同时出安装版与便携版：共享同一个打包中间产物，比跑两遍省一半时间
+          npx electron-builder --win nsis portable --x64 --publish never
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
@@ -138,9 +145,12 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           New-Item -ItemType Directory -Force dist/windows-release | Out-Null
           $version = (Get-Content package.json | ConvertFrom-Json).version
-          Copy-Item "dist/红果短剧-$version-便携版.exe" "dist/windows-release/hongguo-downloader-$version-win-x64.exe"
-          Compress-Archive -LiteralPath "dist/windows-release/hongguo-downloader-$version-win-x64.exe" -DestinationPath "dist/windows-release/hongguo-downloader-$version-win-x64.zip"
-          # --win portable 的中间产物就是绿色版目录，顺手压一个解压即用的包
+          # 安装版：有开始菜单/桌面快捷方式、可自选安装目录、可从"应用和功能"卸载，
+          # 并且 appId 派生的升级码在这里才真正生效（升级而不是并行安装）。
+          Copy-Item "dist/红果短剧-Setup-$version.exe" "dist/windows-release/hongguo-downloader-$version-win-x64-setup.exe"
+          Copy-Item "dist/红果短剧-$version-便携版.exe" "dist/windows-release/hongguo-downloader-$version-win-x64-portable.exe"
+          Compress-Archive -LiteralPath "dist/windows-release/hongguo-downloader-$version-win-x64-portable.exe" -DestinationPath "dist/windows-release/hongguo-downloader-$version-win-x64-portable.zip"
+          # 打包的中间产物就是绿色版目录，顺手压一个解压即用的包
           Copy-Item dist/win-unpacked "dist/红果短剧-$version" -Recurse
           Compress-Archive -Path "dist/红果短剧-$version" -DestinationPath "dist/windows-release/hongguo-downloader-$version-win-x64-green.zip"
           Copy-Item media/*corresponding-source.tar.gz dist/windows-release/
@@ -192,12 +202,20 @@ jobs:
 
           见仓库内 docs/ADR-0001-danmaku.md。
 
-          - `*-win-x64.exe`：便携版单文件，双击即用
-          - `*-win-x64.zip`：上面那个 exe 的压缩包
-          - `*-win-x64-green.zip`：绿色版目录，解压后运行里面的 exe
+          ## 下载哪个
+
+          - `*-win-x64-setup.exe`：**安装版（推荐）**。有开始菜单与桌面快捷方式，可自选安装目录，可从系统「应用和功能」卸载。
+          - `*-win-x64-portable.exe`：便携版单文件，双击即用，不写注册表。
+          - `*-win-x64-green.zip`：绿色版目录，解压后运行里面的 exe。
+          - `*-win-x64-portable.zip`：便携版 exe 的压缩包（给不方便直接下 exe 的场景）。
+
+          ## 校验与源码
+
           - `*-windows-source.zip`：本版本对应源码
           - `*corresponding-source.tar.gz`：内置 ffmpeg/x264 的对应源码（GPL 要求）
-          - `WINDOWS-SHA256SUMS.txt`：校验和
+          - `WINDOWS-SHA256SUMS.txt`：全部产物的 SHA256
+
+          安装版与便携版可以共存；安装版升级时会识别为同一应用（升级安装），不会装出两份。
           NOTES
           sed -i 's/^          //' NOTES.md
           # 已有同名 Release 就覆盖产物，避免重跑构建时失败
