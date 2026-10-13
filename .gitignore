@@ -3,6 +3,12 @@ node_modules/
 dist/
 dist-react/
 
+# Electron/Chromium 崩溃转储。本地跑渲染层检查时，被强杀的 electron 会在仓库根
+# 留下 core（可达数百 MB），别让它进版本库 —— 曾有一次以 691MB 被推上去，是
+# GitHub 的钩子拦下来的。
+core
+core.*
+
 # 内置的 ffmpeg 二进制（约 167MB，从网络获取，不纳入版本管理）
 # 打包前执行：node scripts/setup-ffmpeg.js 或手动放入 build/ffmpeg/
 # 注意：许可证文本（*.txt / COPYING.* / LICENSE.md）必须随源码保留，

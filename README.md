@@ -33,6 +33,10 @@
 
 设计取舍、被否决的方案、验证证据与已知风险见 [`docs/ADR-0001-danmaku.md`](docs/ADR-0001-danmaku.md)。
 
+![官方弹幕：按播放时间点分道飘过，逐条沿用来源颜色](docs/screenshots/danmaku-official-overlay.png)
+
+<sub>叠层渲染实拍（示例取自真实接口返回的弹幕文本，播放画面为示意）。</sub>
+
 ## 下载与安装
 
 **当前正式版：1.6**。按你的设备选择一个文件即可，媒体工具已内置，无需另装 Node.js、Homebrew 或 FFmpeg。
