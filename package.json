@@ -35,7 +35,7 @@
     "wait-on": "^7.2.0"
   },
   "build": {
-    "appId": "io.github.jackotom.hongguo-drama-mac",
+    "appId": "io.github.dawei233.hongguo-drama",
     "productName": "红果短剧",
     "directories": {
       "output": "dist"
