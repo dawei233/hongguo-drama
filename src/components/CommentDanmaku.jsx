@@ -150,14 +150,19 @@ export default function CommentDanmaku({ videoRef, source, available, danmaku })
   </div>;
 }
 
-export function DanmakuSettings({ danmaku, onClose, panelRef, maxHeight }) {
+export function DanmakuSettings({ danmaku, source = 'comments', onSourceChange, onClose, panelRef, maxHeight }) {
   const { settings, update } = danmaku;
-  return <div className="danmaku-settings" ref={panelRef} role="dialog" aria-label="评论弹幕设置" data-player-menu style={{ maxHeight }}
+  // 未传 source 时保持上游原有文案与结构（评论滚动条），传了才显示源选择。
+  const official = source === 'official';
+  return <div className="danmaku-settings" ref={panelRef} role="dialog" aria-label={official ? '弹幕设置' : '评论弹幕设置'} data-player-menu style={{ maxHeight }}
     onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); onClose(); } }}>
-    <div className="danmaku-settings-heading"><strong>评论弹幕</strong><button type="button" aria-label="关闭弹幕设置" onClick={onClose}>
+    <div className="danmaku-settings-heading"><strong>{official ? '弹幕' : '评论弹幕'}</strong><button type="button" aria-label="关闭弹幕设置" onClick={onClose}>
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
     </button></div>
-    <p>本集公开评论依次展示，与视频时间无对应。全文可在「剧评与收藏」查看。</p>
+    {onSourceChange && <label>弹幕来源<select aria-label="弹幕来源" value={source} onChange={event => onSourceChange(event.target.value)}><option value="official">官方弹幕</option><option value="comments">本集评论</option></select></label>}
+    {official
+      ? <p>来自官方接口、带播放时间点，按进度投放。上游每次只返回本集的一部分弹幕，条数会随请求变化，因此不显示「已全部加载」。</p>
+      : <p>本集公开评论依次展示，与视频时间无对应。全文可在「剧评与收藏」查看。</p>}
     <label>不透明度 <output>{settings.opacity}%</output><input autoFocus aria-label="弹幕不透明度" type="range" min="20" max="100" step="5" value={settings.opacity} onChange={event => update({ opacity: Number(event.target.value) })} /></label>
     <label>字号 <output>{settings.fontSize}px</output><input aria-label="弹幕字号" type="range" min="16" max="32" step="2" value={settings.fontSize} onChange={event => update({ fontSize: Number(event.target.value) })} /></label>
     <label>滚动速度 <output>{settings.speed}×</output><input aria-label="弹幕滚动速度" type="range" min="0.5" max="2" step="0.25" value={settings.speed} onChange={event => update({ speed: Number(event.target.value) })} /></label>
@@ -167,6 +172,7 @@ export function DanmakuSettings({ danmaku, onClose, panelRef, maxHeight }) {
     <label>自定义屏蔽词<textarea aria-label="自定义屏蔽词" rows="3" maxLength="10000" value={settings.blockedWords} placeholder="每行一个词，也可用逗号分隔" onChange={event => update({ blockedWords: event.target.value })} /></label>
     <p>内置词含常见涉政及辱骂词；自定义词始终生效。命中后整条隐藏，仅保存在本机。词库无法覆盖所有表达或变体。</p>
     <p>默认在上半屏显示。跟随播放暂停与倍速；系统开启减少动态效果时，改为静态轮换。</p>
+    {official && <p>官方弹幕依赖非公开的签名接口，上游改动后可能失效。失效时会如实提示并保留「本集评论」作为备用来源。</p>}
     <p role="status">{danmaku.saveError || danmaku.status}</p>
     <div className="danmaku-settings-actions">{danmaku.error && <button type="button" onClick={danmaku.retry}>继续加载</button>}<button type="button" onClick={danmaku.reset}>恢复默认</button></div>
   </div>;

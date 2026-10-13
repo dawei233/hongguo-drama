@@ -11,7 +11,7 @@ const formatTime = seconds => {
 };
 const Icon = ({ children }) => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{children}</svg>;
 
-export default function PlayerControls({ danmaku, enhancement, shortcuts = DEFAULT_SHORTCUTS, onToggleFullscreen, videoRef, stageRef, source, available, continuing = false, autoContinue = false, rate, onRateChange, onError, pictureMode = 'fit', onPictureModeChange, portrait = false, windowFill = false, onWindowFill }) {
+export default function PlayerControls({ danmaku, danmakuSource = 'comments', onDanmakuSourceChange, enhancement, shortcuts = DEFAULT_SHORTCUTS, onToggleFullscreen, videoRef, stageRef, source, available, continuing = false, autoContinue = false, rate, onRateChange, onError, pictureMode = 'fit', onPictureModeChange, portrait = false, windowFill = false, onWindowFill }) {
   const [media, setMedia] = useState({ paused: true, ended: false, time: 0, duration: 0, muted: false, volume: 1 });
   const [fullscreen, setFullscreen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -204,13 +204,17 @@ export default function PlayerControls({ danmaku, enhancement, shortcuts = DEFAU
         <button type="button" data-player-control aria-label={media.paused ? '播放' : '暂停'} title={`播放/暂停（${formatShortcut(shortcuts.play)}）`} disabled={!available} onClick={togglePlay}>{media.paused ? <Play size={18} /> : <Pause size={18} />}</button>
         <span className="player-controls-time">{formatTime(media.time)} / {formatTime(media.duration)}</span>
         {danmaku && <div className="player-controls-danmaku">
-          <button type="button" data-player-menu className={`danmaku-icon-button ${danmaku.enabled ? 'danmaku-enabled' : ''}`} aria-label={danmaku.enabled ? '关闭评论弹幕' : '开启评论弹幕'} aria-pressed={danmaku.enabled}
-            title={danmaku.supported ? '将当前集公开评论显示在画面上' : '仅红果来源的当前集支持评论弹幕'} disabled={!danmaku.supported} onClick={danmaku.toggle}><span className="danmaku-symbol" aria-hidden="true">弹<span className="danmaku-state-mark" /></span></button>
-          <button type="button" data-player-menu className="danmaku-icon-button" ref={danmakuButtonRef} aria-label="弹幕设置" title="评论弹幕设置" aria-haspopup="dialog" aria-expanded={danmakuOpen}
+          {/* 文案跟着当前弹幕源走：官方弹幕是按播放进度投放的，本集评论不是。
+              把两者说成同一件事会误导用户。 */}
+          <button type="button" data-player-menu className={`danmaku-icon-button ${danmaku.enabled ? 'danmaku-enabled' : ''}`} aria-label={danmaku.enabled ? `${danmakuSource === 'official' ? '关闭弹幕' : '关闭评论弹幕'}` : `${danmakuSource === 'official' ? '开启弹幕' : '开启评论弹幕'}`} aria-pressed={danmaku.enabled}
+            title={danmaku.supported
+              ? (danmakuSource === 'official' ? '将本集弹幕按播放进度显示在画面上' : '将当前集公开评论显示在画面上')
+              : (danmakuSource === 'official' ? '仅红果来源的剧集支持弹幕' : '仅红果来源的当前集支持评论弹幕')} disabled={!danmaku.supported} onClick={danmaku.toggle}><span className="danmaku-symbol" aria-hidden="true">弹<span className="danmaku-state-mark" /></span></button>
+          <button type="button" data-player-menu className="danmaku-icon-button" ref={danmakuButtonRef} aria-label="弹幕设置" title="弹幕设置" aria-haspopup="dialog" aria-expanded={danmakuOpen}
             onClick={() => { setMenuOpen(false); setDanmakuOpen(open => !open); }}>
             <span className="danmaku-symbol" aria-hidden="true">弹<span className="danmaku-settings-mark"><SettingsIcon size={10} /></span></span>
           </button>
-          {danmakuOpen && <DanmakuSettings danmaku={danmaku} onClose={closeDanmaku} panelRef={danmakuPanelRef} maxHeight={danmakuHeight} />}
+          {danmakuOpen && <DanmakuSettings danmaku={danmaku} source={danmakuSource} onSourceChange={onDanmakuSourceChange} onClose={closeDanmaku} panelRef={danmakuPanelRef} maxHeight={danmakuHeight} />}
         </div>}
         <div className="player-controls-volume">
           <button type="button" data-player-control aria-label={media.muted ? '取消静音' : '静音'} onClick={() => { const video = videoRef.current; if (video) video.muted = !video.muted; }}>

@@ -3,6 +3,7 @@ import useDialogKeyboard from './useDialogKeyboard';
 import './Settings.css';
 import AppearanceSettings from './AppearanceSettings';
 import ShortcutSettings from './ShortcutSettings';
+import { useDanmakuSource, writeDanmakuSource } from './danmakuSource.mjs';
 import { Settings, Folder, Check, Globe, X, RefreshCw, AlertCircle } from './icons';
 
 
@@ -52,6 +53,9 @@ function SettingsPage({ active = true, preview = false }) {
   const [testing, setTesting] = useState(false);
   const [saveError, setSaveError] = useState('');
   const [saving, setSaving] = useState(false);
+  // 弹幕来源与其他弹幕偏好分开存：前者改了立刻生效（播放中也能切），
+  // 不受本页"保存"按钮约束，与视觉设置的保存语义不同。
+  const danmakuSource = useDanmakuSource();
   const [dirty, setDirty] = useState(false);
   const [loadError, setLoadError] = useState('');
   const testVersion = useRef(0);
@@ -185,7 +189,9 @@ function SettingsPage({ active = true, preview = false }) {
         <div className="settings-group">
           <span className="settings-label">弹幕按钮设置</span>
           <div className="settings-inline-save">
-          <label className="proxy-switch-row"><input type="checkbox" aria-label="显示弹幕按钮" checked={settings.show_danmaku_controls !== false} onChange={event => update('show_danmaku_controls', event.target.checked)} /><span className="proxy-switch-text">显示弹幕按钮<em>保存后生效。关闭时隐藏弹幕及弹幕设置按钮，并停用评论弹幕；再次开启会恢复原有弹幕偏好。</em></span></label>
+          <label className="proxy-switch-row"><input type="checkbox" aria-label="显示弹幕按钮" checked={settings.show_danmaku_controls !== false} onChange={event => update('show_danmaku_controls', event.target.checked)} /><span className="proxy-switch-text">显示弹幕按钮<em>保存后生效。关闭时隐藏弹幕及弹幕设置按钮，并停用弹幕；再次开启会恢复原有弹幕偏好。</em></span></label>
+          <label className="proxy-switch-row"><span className="proxy-switch-text">弹幕来源<em>官方弹幕带播放时间点、按进度投放；本集评论来自官网公开页面，与视频时间无对应。两者视觉设置共用。立即生效，无需保存。</em></span>
+            <select aria-label="弹幕来源" value={danmakuSource} onChange={event => writeDanmakuSource(event.target.value)}><option value="official">官方弹幕</option><option value="comments">本集评论</option></select></label>
             <button type="button" className="btn btn-primary" aria-label="保存当前设置" onClick={save}>{saving ? '保存中…' : saved ? '已保存' : '保存'}</button>
           </div>
         </div>

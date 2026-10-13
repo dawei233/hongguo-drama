@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import useDialogKeyboard from './useDialogKeyboard';
 import PlayerControls from './PlayerControls';
 import CommentDanmaku, { useCommentDanmaku } from './CommentDanmaku';
+import OfficialDanmaku, { useOfficialDanmaku } from './OfficialDanmaku';
+import { useDanmakuSource, writeDanmakuSource } from './danmakuSource.mjs';
 import { SHORTCUT_ACTIONS, formatShortcut, ignoresPlaybackShortcut, readShortcuts, shortcutKey, subscribeShortcuts } from '../shortcuts';
 import CommunityPanel from './CommunityPanel';
 import VideoEnhancement, { useVideoEnhancement } from './VideoEnhancement';
@@ -396,7 +398,14 @@ function Player({ target, onNavigate, active = true, portrait = false, actionsHi
   // 原生全屏依附于 video 节点。准备下一集时保留结束帧，换源不换节点。
   if (canPlay) lastVideoSrcRef.current = playableSource;
   const videoSrc = compatProgress ? '' : lastVideoSrcRef.current;
-  const danmaku = useCommentDanmaku({ seriesId: activeSeriesId, episodeId: current?.vid, active: active && canPlay && showDanmakuControls, source: videoSrc });
+  // 两条弹幕通路可以切换：官方弹幕（带时间轴）与本集评论（与时间无关的滚动条）。
+  // 两个 hook 都必须无条件调用（Hooks 规则），但只让被选中的那条真正去取数据 ——
+  // 否则一次播放会同时打两个上游接口，白白多出请求量。
+  const danmakuSource = useDanmakuSource();
+  const danmakuActive = active && canPlay && showDanmakuControls;
+  const commentDanmaku = useCommentDanmaku({ seriesId: activeSeriesId, episodeId: current?.vid, active: danmakuActive && danmakuSource === 'comments', source: videoSrc });
+  const officialDanmaku = useOfficialDanmaku({ seriesId: activeSeriesId, vid: current?.vid, active: danmakuActive && danmakuSource === 'official' });
+  const danmaku = danmakuSource === 'official' ? officialDanmaku : commentDanmaku;
 
   useEffect(() => {
     const v = videoRef.current;
@@ -1314,8 +1323,10 @@ function Player({ target, onNavigate, active = true, portrait = false, actionsHi
             }}
           />
         <VideoEnhancement videoRef={videoRef} source={videoSrc} available={canPlay && active} enhancement={enhancement} />
-        <CommentDanmaku videoRef={videoRef} source={videoSrc} available={canPlay && active} danmaku={danmaku} />
-        <PlayerControls danmaku={showDanmakuControls ? danmaku : null} enhancement={enhancement} continuing={autoAdvancing && !playbackError && !decodeFailed} autoContinue={autoNext && !!findNext(currentIndex)} shortcuts={shortcuts} onToggleFullscreen={toggleFullscreen} portrait={portrait} windowFill={windowFill} onWindowFill={setWindowFill} videoRef={videoRef} stageRef={stageRef} source={videoSrc} available={canPlay}
+        {danmakuSource === 'official'
+          ? <OfficialDanmaku videoRef={videoRef} source={videoSrc} available={canPlay && active} danmaku={danmaku} />
+          : <CommentDanmaku videoRef={videoRef} source={videoSrc} available={canPlay && active} danmaku={danmaku} />}
+        <PlayerControls danmaku={showDanmakuControls ? danmaku : null} danmakuSource={danmakuSource} onDanmakuSourceChange={writeDanmakuSource} enhancement={enhancement} continuing={autoAdvancing && !playbackError && !decodeFailed} autoContinue={autoNext && !!findNext(currentIndex)} shortcuts={shortcuts} onToggleFullscreen={toggleFullscreen} portrait={portrait} windowFill={windowFill} onWindowFill={setWindowFill} videoRef={videoRef} stageRef={stageRef} source={videoSrc} available={canPlay}
           pictureMode={pictureMode} onPictureModeChange={changePictureMode} rate={playbackRate} onRateChange={changePlaybackRate} onError={showToast} />
         {!canPlay && (
           <div className="player-placeholder" style={{ position: 'absolute', inset: 0 }}>

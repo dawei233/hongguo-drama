@@ -32,6 +32,7 @@ const { createEpisodePanelController } = require('./src/native/episode-panel');
 const { availableRelease } = require('./src/native/app-update');
 const { fetchPublicDetails } = require('./src/native/public-details');
 const { fetchEpisodeComments } = require('./src/native/episode-comments');
+const { fetchDanmaku } = require('./src/native/danmaku');
 const mediaAccess = require('./src/native/media-access').createMediaAccess(process.env.VITE_DEV_SERVER_URL);
 const APP_VERSION = app.getVersion() || '1.0.0';
 
@@ -3195,6 +3196,12 @@ ipcMain.handle('get-public-details', async (event, seriesId, vid) => {
 ipcMain.handle('get-episode-comments', async (event, options) => {
   if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) return { success: false, error: 'Window unavailable' };
   return fetchEpisodeComments(options);
+});
+// 官方弹幕（带视频时间轴）。与上面的本集评论是两条独立数据源：
+// 评论来自匿名网页、与时间无关；弹幕来自需要签名的官方接口、按播放进度投放。
+ipcMain.handle('get-episode-danmaku', async (event, options) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) return { success: false, error: 'Window unavailable' };
+  return fetchDanmaku(options);
 });
 
 ipcMain.handle('get-app-info', async () => ({
