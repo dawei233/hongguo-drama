@@ -304,9 +304,9 @@ async function keyHandoff(key, code, expectedSource) {
   result.checks.push('Actual single-file EXE: after default ArrowUp returns to the previous episode, natural ended advances through Player to the expected second local flower episode; every sampled frame retains hidden controls and fullscreen; pointer movement restores controls');
   await clickControl('退出全屏');
   await delay(2400);
-  assert(await evaluate('!document.fullscreenElement && !document.querySelector("video").paused && getComputedStyle(document.querySelector(".player-controls")).opacity === "1"'), 'Exiting fullscreen must restore persistent landscape controls while playing');
-  result.fullscreenControls = { idleHidden: true, pointerRestores: true, pausedVisible: true, resumedHidden: true, exitRestores: true };
-  result.checks.push('Actual single-file EXE: fullscreen idle hides controls; pointer restores; pause keeps visible; resume hides; exiting fullscreen restores landscape controls');
+  assert(await evaluate('!document.fullscreenElement && !document.querySelector("video").paused && getComputedStyle(document.querySelector(".player-controls")).opacity === "0"'), 'Ordinary landscape must hide idle controls after exiting fullscreen');
+  result.fullscreenControls = { idleHidden: true, pointerRestores: true, pausedVisible: true, resumedHidden: true, landscapeIdleHidden: true };
+  result.checks.push('Actual single-file EXE: fullscreen and ordinary landscape idle hide controls; pointer restores; pause keeps visible; resume hides');
   result.passed = true;
   console.log('Windows release smoke: PASS (' + result.checks.length + ' checks)');
 })().catch(error => { result.passed = false; result.error = error.stack; console.error(error.stack); process.exitCode = 1; })

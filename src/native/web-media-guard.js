@@ -3,6 +3,19 @@ const dns = require('node:dns');
 const http = require('node:http');
 const https = require('node:https');
 
+function guardedAgent(Agent) {
+  const agent = new Agent({ keepAlive: true });
+  const getName = agent.getName;
+  const proxyRoute = Symbol('proxyRoute');
+  // Explicit proxies may resolve privately; never lend their sockets to direct media requests.
+  agent.addRequest = (request, options) => Agent.prototype.addRequest.call(agent, request,
+    { ...options, [proxyRoute]: /^https?:\/\//i.test(request.path) });
+  agent.getName = options => `${getName.call(agent, options)}:${options[proxyRoute] ? 'proxy' : 'direct'}`;
+  return agent;
+}
+const httpAgent = guardedAgent(http.Agent);
+const httpsAgent = guardedAgent(https.Agent);
+
 const blocked = new BlockList();
 for (const [address, prefix] of [['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8],
   ['169.254.0.0', 16], ['172.16.0.0', 12], ['192.0.0.0', 24], ['192.0.2.0', 24], ['192.168.0.0', 16],
@@ -80,9 +93,9 @@ function webMediaRequestOptions(value) {
   const hosts = new Map([[initial.hostname.toLowerCase(), initial]]);
   return {
     maxRedirects: 5,
-    // A global pooled socket can skip this request's lookup entirely.
-    httpAgent: new http.Agent({ keepAlive: false }),
-    httpsAgent: new https.Agent({ keepAlive: false }),
+    // Reuse only this guard's sockets; new connections still run the request's checked lookup.
+    httpAgent,
+    httpsAgent,
     lookup(hostname, options, callback) {
       const settings = typeof options === 'number' ? { family: options } : options || {};
       const finish = addresses => {

@@ -16,7 +16,7 @@ const webGone = [{ source: 'web', code: 'HTTP_404' }, { source: 'app', code: 'BU
 function fixture(initialTasks) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hongguo-source-retry-'));
   dirs.push(root);
-  const handlers = {}, timers = [], app = new EventEmitter(), state = { result: unavailable(webGone), calls: 0 };
+  const handlers = {}, timers = [], app = new EventEmitter(), state = { result: unavailable(webGone), calls: 0, qualities: [] };
   let settings = { root }, saved = initialTasks, ready, reportStorageError;
   Object.assign(app, { getVersion: () => 'test', getPath: () => root,
     commandLine: { appendSwitch() {} }, requestSingleInstanceLock: () => true, whenReady: () => ({ then(fn) { ready = fn; } }) });
@@ -29,7 +29,7 @@ function fixture(initialTasks) {
   const context = vm.createContext({ require: n => n === 'electron'
     ? { app, ipcMain: { handle: (n, f) => handlers[n] = f }, protocol: { registerSchemesAsPrivileged() {} },
       Menu: { buildFromTemplate: items => items, setApplicationMenu() {} } }
-    : n === './src/native/hongguo' ? { fetchPlayUrlSingle: async () => { state.calls++; return state.result; }, markWebMediaFailure() {} }
+    : n === './src/native/hongguo' ? { fetchPlayUrlSingle: async (_vid, _sid, options) => { state.calls++; state.qualities.push(options.quality); return state.result; }, markWebMediaFailure() {} }
     : n === './src/store' ? { getSettings: () => settings, saveSettings: s => settings = s,
       init() {}, getTasks: () => JSON.parse(JSON.stringify(saved || [])), getSeries: () => [], getMergeTasks: () => [],
       setErrorHandler: fn => reportStorageError = fn,
@@ -81,8 +81,8 @@ const checks = [
     assert.doesNotMatch(h.task().error, /自动重试/);
     assert.equal(h.live().length, 0);
   }],
-  ['App-only, security and third-party failures are not deferred', async () => {
-    for (const [sources, vid] of [[[{ source: 'app', code: 'BUSINESS_REJECTED' }]], [[{ source: 'web', code: 'SECURITY_BLOCKED' }]], [webGone, 'custom:a:1']]) {
+  ['App refusal, security and third-party failures are not deferred', async () => {
+    for (const [sources, vid] of [[[{ source: 'app', code: 'BUSINESS_REJECTED' }]], [[{ source: 'app', code: 'HTTP_403' }]], [[{ source: 'web', code: 'SECURITY_BLOCKED' }]], [[{ source: 'app', code: 'TIMEOUT' }, { source: 'web', code: 'SECURITY_BLOCKED' }]], [webGone, 'custom:a:1']]) {
       const h = fixture();
       h.state.result = unavailable(sources);
       if (vid) h.run(`downloadTasks[0].hongguoInfo.vid = ${JSON.stringify(vid)}`);
@@ -90,6 +90,38 @@ const checks = [
       assert.equal(h.task().status, 'failed');
       assert.equal(h.task().retryAt, undefined);
       assert.equal(h.live().length, 0);
+    }
+  }],
+  ['temporary App-only failures retry later without losing selected quality', async () => {
+    for (const quality of ['720p', '1080p']) for (const code of ['TIMEOUT', 'NETWORK_ERROR', 'HTTP_408', 'HTTP_503']) {
+      const h = fixture();
+      h.task().downloadQuality = quality;
+      h.state.result = unavailable([{ source: 'app', code }]);
+      await h.download();
+      assert.equal(h.task().status, 'failed');
+      assert.equal(h.live().length, 1, `${quality}: ${code} must retain delayed recovery`);
+      assert.equal(h.live()[0].ms, 3 * 60000);
+      assert.equal(h.task().sourceRetries, 1);
+      h.fire();
+      h.state.result = { url: 'https://media.example/video.mp4', source: 'app' };
+      await h.download();
+      assert.equal(h.task().status, 'completed', h.task().error);
+      assert.ok(h.state.qualities.every(value => value === quality), 'retry must not fall back to automatic quality');
+      assert.equal(h.task().retryAt, undefined);
+      assert.equal(h.task().sourceRetries, undefined);
+    }
+  }],
+  ['temporary transfer failures retry later while explicit refusals stay manual', async () => {
+    for (const failure of [{ code: 'ECONNRESET' }, { mediaStatus: 408, mediaRetryable: true },
+      { mediaStatus: 503, mediaRetryable: true }, { mediaStatus: 403, mediaRetryable: true }]) {
+      const h = fixture();
+      h.task().downloadQuality = '1080p';
+      h.state.result = { url: 'https://media.example/video.mp4', source: 'app' };
+      h.run(`requestMedia = async () => { throw Object.assign(new Error('transfer failed'), ${JSON.stringify(failure)}); };`);
+      await h.download();
+      assert.equal(h.task().status, 'failed');
+      assert.equal(h.live().length, failure.mediaStatus === 403 ? 0 : 1, JSON.stringify(failure));
+      assert.equal(h.task().downloadQuality, '1080p');
     }
   }],
   ['media 404/410 do not defer App-only explicit quality, but preserve automatic quality retries', async () => {

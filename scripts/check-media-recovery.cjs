@@ -177,7 +177,10 @@ function load(fetchPlayUrlSingle, overrides = {}) {
     await h.handlers['release-online-play']({}, {requestId:'timeout'});await pending;
     assert.ok(!result.unbounded,'source lookup never settled within its time budget');assert.equal(result.success,false);assert.match(result.error,/超时/);
   });
-  for(const h of harnesses) h.context.clearOnlineCache();
+  for(const h of harnesses) {
+    h.context.clearOnlineCache();
+    h.run('for (const timer of sourceRetryTimers.values()) clearTimeout(timer); sourceRetryTimers.clear();');
+  }
   server.closeAllConnections(); await new Promise(r=>server.close(r));
   assert.equal(failures,0,`${failures} recovery regressions`);
 })().catch(e=>{console.error(e.message);process.exitCode=1;}).finally(()=>fs.rmSync(root,{recursive:true,force:true}));

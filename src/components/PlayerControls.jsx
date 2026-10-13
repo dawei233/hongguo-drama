@@ -57,7 +57,7 @@ export default function PlayerControls({ danmaku, danmakuSource = 'comments', on
     let dragging = false;
     const scheduleHide = () => {
       clearTimeout(timer);
-      if ((portrait || expanded) && available && !media.paused && !menuOpen && !danmakuOpen && !dragging) {
+      if (available && !media.paused && !menuOpen && !danmakuOpen && !dragging) {
         timer = setTimeout(() => {
           if (!controlsRef.current?.querySelector(':focus-visible')) setControlsHidden(true);
         }, 2000);
@@ -101,7 +101,7 @@ export default function PlayerControls({ danmaku, danmakuSource = 'comments', on
     const onBlur = () => { episodeKeysRef.current.clear(); stopDrag(); };
     window.addEventListener('blur', onBlur);
     // Source changes and automatic handoffs are not user activity.
-    if (!(portrait || expanded) || menuOpen || danmakuOpen || (!continuing && !available)) reveal();
+    if (menuOpen || danmakuOpen || (!continuing && !available)) reveal();
     else if (!continuing && media.paused && !(media.ended && autoContinue)) {
       // A native pause can precede ended; explicit key/click pauses already reveal immediately.
       if (autoContinue && controlsHidden) pauseTimer = setTimeout(() => {

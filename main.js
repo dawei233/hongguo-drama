@@ -503,8 +503,7 @@ function enqueuePendingTasks() {
   return pending.length;
 }
 
-// Official web episodes open and close within minutes, and the App channel rejects
-// repeat requests; retry a few times later instead of hammering the sources now.
+// Give temporary source/transport failures a bounded recovery window.
 const SOURCE_RETRY_DELAYS = [3, 8, 15].map(minutes => minutes * 60000);
 const sourceRetryTimers = new Map();
 
@@ -512,8 +511,11 @@ function isDeferrableSourceError(task, error) {
   if (!/^\d{1,30}$/.test(String(task.hongguoInfo?.vid || ''))) return false;
   if (error?.code === 'SOURCE_UNAVAILABLE') {
     const sources = Array.isArray(error.sources) ? error.sources : [];
-    return sources.some(item => item.source === 'web') && !sources.some(item => item.code === 'SECURITY_BLOCKED');
+    return !sources.some(item => item.code === 'SECURITY_BLOCKED') && sources.some(item =>
+      item.source === 'web' || /^(?:TIMEOUT|NETWORK_ERROR|HTTP_(?:408|5\d\d))$/.test(item.code));
   }
+  if (error?.mediaStatus === 408 || error?.mediaStatus >= 500 && error?.mediaStatus <= 599) return true;
+  if (['ECONNRESET', 'ECONNABORTED', 'ETIMEDOUT', 'EPIPE', 'ERR_BAD_RESPONSE', 'ERR_STREAM_PREMATURE_CLOSE', 'EAI_AGAIN'].includes(error?.code)) return true;
   return [404, 410].includes(error?.mediaStatus) && normalizeDownloadQuality(task.downloadQuality) === 'auto';
 }
 

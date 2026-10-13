@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const http = require('node:http');
+const https = require('node:https');
 const os = require('node:os');
 const { EventEmitter } = require('node:events');
 const { createRequire } = require('node:module');
@@ -62,7 +63,69 @@ function guardWithDns(addresses, answer = '8.8.8.8') {
   vm.runInNewContext(fs.readFileSync(guardPath, 'utf8'), context);
   return context.module.exports;
 }
+
+// Run the real guarded lookup, then route an accepted public address to a local fixture server.
+function loopbackAfterGuard(options) {
+  options.httpAgent.createConnection = (connection, callback) => {
+    connection.lookup(connection.host, { all: true }, error => {
+      if (error) return callback(error);
+      const socket = http.Agent.prototype.createConnection.call(options.httpAgent,
+        { ...connection, host: '127.0.0.1', hostname: undefined, lookup: undefined });
+      callback(null, socket);
+    });
+  };
+  return options;
+}
 const checks = [
+  ['guarded Range requests reuse validated sockets without global agents', async () => {
+    const axios = req('axios'), guard = guardWithDns([{ address: '8.8.8.8', family: 4 }]);
+    const connections = new Set();
+    const server = http.createServer((request, response) => {
+      connections.add(request.socket); assert.equal(request.headers.range, 'bytes=0-1');
+      response.writeHead(206); response.end('ok');
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const url = `http://media.example:${server.address().port}/a`;
+    try {
+      for (let i = 0; i < 3; i++) {
+        const options = loopbackAfterGuard(guard.webMediaRequestOptions(url));
+        assert.notEqual(options.httpAgent, http.globalAgent);
+        assert.notEqual(options.httpsAgent, https.globalAgent);
+        await axios.get(url, { proxy: false, timeout: 2000, headers: { Range: 'bytes=0-1' }, ...options });
+      }
+      assert.equal(connections.size, 1, 'three guarded Range requests must reuse one validated socket');
+      assert.equal(guard.webMediaRequestOptions(url).httpsAgent, guard.webMediaRequestOptions(url).httpsAgent);
+    } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+  }],
+  ['new connections revalidate DNS after a previously accepted public connection', async () => {
+    const axios = req('axios'), records = [{ address: '8.8.8.8', family: 4 }], guard = guardWithDns(records);
+    let hits = 0;
+    const server = http.createServer((_request, response) => { hits++; response.writeHead(200, { Connection: 'close' }); response.end('ok'); });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const url = `http://media.example:${server.address().port}/a`;
+    try {
+      await axios.get(url, { proxy: false, timeout: 2000, ...loopbackAfterGuard(guard.webMediaRequestOptions(url)) });
+      records[0] = { address: '127.0.0.1', family: 4 };
+      await assert.rejects(axios.get(url, { proxy: false, timeout: 2000, ...loopbackAfterGuard(guard.webMediaRequestOptions(url)) }),
+        error => error.code === 'ERR_WEB_MEDIA_ADDRESS');
+      assert.equal(hits, 1, 'rebound private address must never receive a second request');
+    } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+  }],
+  ['trusted proxy sockets cannot later bypass direct media DNS validation', async () => {
+    const axios = req('axios'), guard = guardWithDns([{ address: '127.0.0.1', family: 4 }]);
+    let hits = 0;
+    const server = http.createServer((_request, response) => { hits++; response.end('ok'); });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const port = server.address().port;
+    try {
+      const url = 'http://media.example/a';
+      await axios.get(url, { proxy: { host: 'user-proxy.example', port, protocol: 'http' }, timeout: 2000, ...guard.webMediaRequestOptions(url) });
+      const direct = `http://user-proxy.example:${port}/private`;
+      await assert.rejects(axios.get(direct, { proxy: false, timeout: 2000, ...guard.webMediaRequestOptions(direct) }),
+        error => error.code === 'ERR_WEB_MEDIA_ADDRESS');
+      assert.equal(hits, 1, 'a proxy socket is trusted only for requests still using the proxy');
+    } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+  }],
   ['provider rejects local/private URLs and retains valid CDN hostnames', async () => {
     for (const url of privateUrls) assert.equal(await provider(url).fetchPlayUrlFromWeb('11', '1'), null, url);
     for (const url of publicUrls) assert.equal((await provider(url).fetchPlayUrlFromWeb('11', '1')).url, url);

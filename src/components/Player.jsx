@@ -1102,6 +1102,7 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
           <h2>我的剧库</h2>
         </div>
         <div className="player-header-right" id="player-management">
+          <p className="player-download-quality-hint" id="player-download-quality-hint">新建下载任务生效；所选清晰度不可用时提示，不自动降级。已有文件不自动删除或覆盖。</p>
           <span className="player-stat">已下载 {playableCount} / {episodes.length || 0} 集</span>
 
           <button
@@ -1164,7 +1165,6 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
             <Layers size={15} />
             {merging ? '提交中...' : '合并导出全集'}
           </button>
-          <p className="player-download-quality-hint" id="player-download-quality-hint">新建下载任务生效；所选清晰度不可用时提示，不自动降级。已有文件不自动删除或覆盖。</p>
         </div>
       </div>
 
