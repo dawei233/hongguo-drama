@@ -1,0 +1,175 @@
+# 本 fork 自己的 Windows 构建与发布流程。
+#
+# 为什么不直接改上游的 windows.yml：
+#   上游那个只监听 `windows/**` 分支、权限是 `contents: read`（只出 artifact，不发
+#   发行版），而且本仓库要跟着上游快速同步 —— 改上游的文件会让每次同步都产生冲突。
+#   所以这里单开一个文件：共享的部分（scripts/build-ffmpeg-source-win.sh、
+#   npm scripts、check-windows-release.cjs）全部复用上游文件，只有流程编排是我们自己的。
+#
+# 为什么不在本地编：这台 NAS 容器只有 7.6G 内存，electron-builder 打 NSIS 用的是
+#   `7za -mx=9`，实测被 OOM 杀掉（exit 137），只能用 `compression=store` 出一个
+#   545MB 的不压缩包。放 GitHub 的 runner 上就是正常的 ~250MB。
+#
+# 触发方式：
+#   1) 推 tag（v*）           -> 构建并自动创建/更新 GitHub Release
+#   2) workflow_dispatch      -> 手动构建；勾选 publish 才会发 Release，否则只出 artifact
+
+name: Fork Windows x64 build & release
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: '构建完成后创建 GitHub Release'
+        type: boolean
+        default: false
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  # 交叉编译 Windows 版 ffmpeg/x264，并打包对应的源码与许可文本。
+  # GPL 要求随二进制分发提供对应源码，这一步同时产出两者。
+  media:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        id: media-cache
+        with:
+          path: ${{ runner.temp }}/media/artifacts
+          key: fork-windows-media-${{ hashFiles('scripts/build-ffmpeg-source-win.sh') }}
+      - if: steps.media-cache.outputs.cache-hit != 'true'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc-mingw-w64-x86-64 make pkg-config
+      - if: steps.media-cache.outputs.cache-hit != 'true'
+        run: bash scripts/build-ffmpeg-source-win.sh "$RUNNER_TEMP/media" 4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-media
+          path: ${{ runner.temp }}/media/artifacts/
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: windows-media-errors
+          path: ${{ runner.temp }}/media/logs/
+
+  windows:
+    needs: media
+    runs-on: windows-2022
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-media
+          path: media
+      # 源码没变就复用上次的产物，省一次完整打包
+      - uses: actions/cache/restore@v4
+        id: portable-cache
+        with:
+          path: |
+            dist/win-unpacked
+            dist/*.exe
+          key: fork-windows-portable-v1-${{ hashFiles('package*.json', 'main.js', 'preload.js', 'index.html', 'vite.config.js', 'src/**', 'build/**', 'scripts/build-ffmpeg-source-win.sh') }}
+      - shell: pwsh
+        if: steps.portable-cache.outputs.cache-hit != 'true'
+        run: |
+          Copy-Item media/bin/* build/ffmpeg/ -Force
+          npm ci --no-audit --no-fund
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm run build:portable
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - uses: actions/cache/save@v4
+        if: steps.portable-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            dist/win-unpacked
+            dist/*.exe
+          key: ${{ steps.portable-cache.outputs.cache-primary-key }}
+      - shell: pwsh
+        run: |
+          # 上游的发布前校验（只认 Windows 平台）：核对打包内容与许可文本齐全
+          node scripts/check-windows-release.cjs
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force dist/windows-release | Out-Null
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          Copy-Item "dist/红果短剧-$version-便携版.exe" "dist/windows-release/hongguo-downloader-$version-win-x64.exe"
+          Compress-Archive -LiteralPath "dist/windows-release/hongguo-downloader-$version-win-x64.exe" -DestinationPath "dist/windows-release/hongguo-downloader-$version-win-x64.zip"
+          # --win portable 的中间产物就是绿色版目录，顺手压一个解压即用的包
+          Copy-Item dist/win-unpacked "dist/红果短剧-$version" -Recurse
+          Compress-Archive -Path "dist/红果短剧-$version" -DestinationPath "dist/windows-release/hongguo-downloader-$version-win-x64-green.zip"
+          Copy-Item media/*corresponding-source.tar.gz dist/windows-release/
+          git archive --format=zip --output="dist/windows-release/hongguo-downloader-$version-windows-source.zip" HEAD
+          Get-FileHash dist/windows-release/* -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $([IO.Path]::GetFileName($_.Path))" } | Set-Content -Encoding utf8 dist/windows-release/WINDOWS-SHA256SUMS.txt
+          Get-ChildItem dist/windows-release | Select-Object Name, Length
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-release-candidate
+          path: dist/windows-release/
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-verification
+          path: dist/windows-verification/
+
+  # 发 Release。只有推 tag、或手动勾了 publish 才跑。
+  release:
+    needs: windows
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-release-candidate
+          path: release
+      - name: 计算 tag
+        id: tag
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=v$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+          fi
+      - name: 创建或更新 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 说明文字用 heredoc 写进文件再交给 --notes-file。
+          # 不要在这里写多行引号字符串：YAML 里的多行双引号标量遇到中文冒号和
+          # 列表项会被解析成映射键，直接报 "a multiline key may not be an implicit key"。
+          cat > NOTES.md <<'NOTES'
+          本 fork 在同步上游的基础上，增加了带播放时间轴的真弹幕（上游那个「弹幕」实为与时间无关的评论滚动条）。
+
+          见仓库内 docs/ADR-0001-danmaku.md。
+
+          - `*-win-x64.exe`：便携版单文件，双击即用
+          - `*-win-x64.zip`：上面那个 exe 的压缩包
+          - `*-win-x64-green.zip`：绿色版目录，解压后运行里面的 exe
+          - `*-windows-source.zip`：本版本对应源码
+          - `*corresponding-source.tar.gz`：内置 ffmpeg/x264 的对应源码（GPL 要求）
+          - `WINDOWS-SHA256SUMS.txt`：校验和
+          NOTES
+          sed -i 's/^          //' NOTES.md
+          # 已有同名 Release 就覆盖产物，避免重跑构建时失败
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" release/* --clobber
+          else
+            gh release create "$TAG" release/* \
+              --title "红果短剧 ${TAG#v}（dawei233 fork）" \
+              --notes-file NOTES.md
+          fi
+          gh release view "$TAG" --json tagName,assets --jq '{tag: .tagName, assets: [.assets[].name]}'

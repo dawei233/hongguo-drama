@@ -30,9 +30,9 @@ const ipc = (name, ...args) => handlers[name]({sender}, ...args);
   for(const flags of [{draft:true},{prerelease:true}]){response={tag_name:'v2.0',...flags};assert.equal((await ipc('check-app-update')).release,null);}
   response={tag_name:'v1.2.1',html_url:'https://evil.invalid/download'};
   let result=await ipc('check-app-update');assert.equal(result.release.version,'1.2.1');
-  assert.equal(result.release.url,'https://github.com/jackotom/hongguo-drama/releases/tag/v1.2.1');
+  assert.equal(result.release.url,'https://github.com/dawei233/hongguo-drama/releases/tag/v1.2.1');
   await ipc('open-app-update');assert.equal(opened[0],result.release.url);
-  assert.equal(requestOptions.url,'https://api.github.com/repos/jackotom/hongguo-drama/releases/latest');
+  assert.equal(requestOptions.url,'https://api.github.com/repos/dawei233/hongguo-drama/releases/latest');
   assert.equal(requestOptions.timeout,10000);assert.equal(requestOptions.maxRedirects,0);
   response={tag_name:'v2.0'};result=await ipc('check-app-update');assert.equal(result.release.version,'2.0');
   response=Error('network timeout');assert.equal((await ipc('check-app-update')).release,null);
