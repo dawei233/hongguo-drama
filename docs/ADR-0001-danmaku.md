@@ -3,6 +3,7 @@
 - 状态：已采纳
 - 日期：2026-10-13
 - 基线：上游 `jackotom/hongguo-drama` @ `21cda5f`（v1.6.0），本 fork 无独有提交，本次为快进合并
+- 后续：同日又合并了上游 v1.7（`4e30a03`，5 个提交）。v1.7 未改动弹幕相关实现（`CommentDanmaku.jsx`、`danmakuModel.mjs`、`episode-comments.js` 均未变），合并只与 `Settings.jsx` 的一行 import 冲突。本 ADR 的结论不受影响。
 - 相关文件：`src/native/danmaku.js`、`src/native/danmaku-sign.js`、`src/components/danmakuOfficial.mjs`、`src/components/OfficialDanmaku.jsx`
 
 ## 1. 问题

@@ -15,7 +15,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 function load(url, mode = 'ok', key = contentKey) {
   const dir = fs.mkdtempSync(path.join(root, 'case-'));
   const handlers = {}, protocols = {}, children = [], app = new EventEmitter();
-  Object.assign(app, { getVersion: () => 'test', getPath: () => dir, commandLine: { appendSwitch() {} }, whenReady: () => ({ then() {} }) });
+  Object.assign(app, { getVersion: () => 'test', getPath: () => dir, commandLine: { appendSwitch() {} }, requestSingleInstanceLock: () => true, whenReady: () => ({ then() {} }) });
   const electron = { app, ipcMain: { handle: (n, f) => handlers[n] = f }, protocol: { registerSchemesAsPrivileged() {}, handle: (n, f) => protocols[n] = f } };
   const native = { fetchPlayUrlSingle: async () => ({ url, contentKey: key, source: 'app', codec: 'h264' }), UA: 'test', VIDEO_REFERER: 'https://example.com/', deriveKey: () => { throw new Error('contentKey must never go through spade'); } };
   const childProcess = { spawn: (file, args) => {
@@ -36,6 +36,9 @@ function load(url, mode = 'ok', key = contentKey) {
   } };
   const context = vm.createContext({ require: n => n === 'electron' ? electron : n === './src/native/hongguo' ? native : n === 'child_process' || n === 'node:child_process' ? childProcess : n === './src/store' ? { saveTasks() {}, getSettings: () => ({ root: dir }) } : req(n), __dirname: path.dirname(source), console: { log() {}, warn() {}, error() {} }, process, Buffer, URL, Response, Request, Headers, AbortController, setTimeout, clearTimeout });
   vm.runInContext(fs.readFileSync(source, 'utf8'), context, { filename: source });
+  // These transport/decryption fixtures are synthetic; real media validity is checked separately.
+  context.probeVideoInfo = async () => ({ w: 1080, h: 1920, duration: 12, codec: 'h264' });
+  context.resolveFfmpeg = () => '/fixture/ffprobe';
   context.resolveFfmpeg = () => '/bundled/ffmpeg'; context.registerStreamProtocol();
   return { dir, handlers, protocols, children, context };
 }

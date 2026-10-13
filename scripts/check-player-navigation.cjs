@@ -12,7 +12,7 @@ const react = {
     if (!(i in slots)) slots[i] = typeof initial === 'function' ? initial() : initial;
     return [slots[i], next => { slots[i] = typeof next === 'function' ? next(slots[i]) : next; }];
   },
-  useRef: value => ({ current: value }), useEffect() {}, useLayoutEffect() {},
+  useRef: value => ({ current: value }), useCallback: fn => fn, useEffect() {}, useLayoutEffect() {},
 };
 const context = { module: { exports: {} }, navigator: { platform: 'Mac' }, require: name => {
   if (name === 'react') return react;

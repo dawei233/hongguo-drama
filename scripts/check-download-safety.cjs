@@ -12,7 +12,7 @@ let serial = 0, failures = 0;
 function load(settings = {}, overrides = {}) {
   const dir = path.join(root, String(++serial)); fs.mkdirSync(dir);
   const handlers = {}, app = new EventEmitter();
-  Object.assign(app, { getVersion: () => 'test', getPath: () => dir, commandLine: { appendSwitch() {} }, whenReady: () => ({ then() {} }) });
+  Object.assign(app, { getVersion: () => 'test', getPath: () => dir, commandLine: { appendSwitch() {} }, requestSingleInstanceLock: () => true, whenReady: () => ({ then() {} }) });
   const electron = { app, ipcMain: { handle: (name, fn) => handlers[name] = fn }, protocol: { registerSchemesAsPrivileged() {} } };
   const store = { getSettings: () => ({ root: dir, ...settings }), saveTasks() {}, saveSeries() {}, saveSettings() {} };
   const context = vm.createContext({ require: name => overrides[name] || (name === 'electron' ? electron : name === './src/store' ? store : req(name)), __dirname: path.dirname(source), process: { ...process, env: { ...process.env } }, console: { log() {}, warn() {}, error() {} }, Buffer, URL, Response, Request, Headers, AbortController, setTimeout, clearTimeout });
@@ -106,6 +106,22 @@ async function check(name, run) { try { await run(); console.log('PASS ' + name)
     const result = await h.handlers['delete-episode-file']({}, 'S', 1);
     assert.ok(result.success === false || result.failed > 0, 'deletion failure must reach caller');
     assert.equal(h.run('downloadTasks.length'), 1, 'failed deletion lost its recovery record');
+  });
+  await check('task file deletion preserves running merge inputs and records', async () => {
+    for (const handler of ['delete-task', 'delete-tasks']) {
+      const h = load(), one = task('one', h.dir); file(one.savePath);
+      h.set('downloadTasks', [one]); h.set('mergeTasks', [{seriesId:'S', status:'running'}]);
+      const result = await h.handlers[handler]({}, handler === 'delete-task' ? 'one' : ['one'], {deleteFiles:true});
+      assert.equal(result.success, false, handler);
+      assert.equal(fs.existsSync(one.savePath), true);
+      assert.equal(h.run('downloadTasks.length'), 1);
+      assert.equal(h.run('downloadTasks[0].status'), 'completed');
+    }
+  });
+  await check('merge episode selection retains the newest task regardless of array order', () => {
+    const h = load(), latest = {...task('latest', h.dir), startTime:30}, old = {...task('old', h.dir), startTime:10};
+    file(latest.savePath); file(old.savePath); h.set('downloadTasks', [latest, old]);
+    assert.equal(h.context.collectSeriesEpisodeFiles('S','Short').ordered[0].path, latest.savePath);
   });
   await check('store save failure is reported and retains the durable snapshot', () => {
     const dir = path.join(root, 'store'); fs.mkdirSync(dir); const target = path.join(dir, 'data.json');

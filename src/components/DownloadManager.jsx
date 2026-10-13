@@ -395,13 +395,18 @@ function DownloadManager({ onNavigate, active = true }) {
     <div className="dm-container">
       <div className="dm-header">
         <div className="dm-title">
-          <div><h2>下载管理</h2><p className="page-description">下载进度、已保存的剧集，都在这里。</p></div>
+          <h2>下载管理</h2>
         </div>
         <div className="dm-stats">
           <span className="stat stat-active">进行中 {activeCount}</span>
           <span className="stat stat-done">已完成 {completedCount}</span>
           <span className="stat stat-fail">失败/停止 {failedCount}</span>
         </div>
+      </div>
+
+      <div className="dm-usage-notice" role="note" aria-label="下载风险与使用倡议">
+        <p><strong>下载仍可能失败。</strong>平台风控可能限制取址；App 取址已采用每次请求更换合成设备标识符的方式尝试绕过按设备限制，但不保证所有剧集可用或下载成功。失败任务会保留，可稍后重试。</p>
+        <p>本软件用于学习研究，建议体验后 24 小时内自行删除；请勿冒充官方或以虚假授权名义收费。开源权利义务以 GPLv3 为准。上述倡议不代表获得平台或版权方授权，也不构成免责承诺。</p>
       </div>
 
       <div className="dm-toolbar">

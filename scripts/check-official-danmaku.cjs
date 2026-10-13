@@ -28,6 +28,9 @@ const FIXTURES = [
 const containerFlags = () => {
   const flags = [];
   if (typeof process.getuid === 'function' && process.getuid() === 0) flags.push('--no-sandbox', '--disable-gpu');
+  // 没有显示服务时走 headless Ozone。CI 与容器里常见没有 X，缺这个开关 Electron
+  // 会直接起不来（或要依赖 Xvfb，而 Xvfb 本身在只读 /var/lib/xkb 下起不来）。
+  if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) flags.push('--ozone-platform=headless');
   let writable = false;
   try {
     const probe = path.join('/dev/shm', `.hongguo-probe-${process.pid}`);

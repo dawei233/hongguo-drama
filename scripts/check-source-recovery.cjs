@@ -46,6 +46,66 @@ function routeFixture() {
   return { ...native, state };
 }
 const checks = [
+  ['App network failures retain only safe codes and aggregate into distinct reasons', async () => {
+    for (const [code, expected] of [['ECONNABORTED', 'TIMEOUT'], ['ETIMEDOUT', 'TIMEOUT'],
+      ['ENOTFOUND', 'NETWORK_ERROR'], ['ECONNRESET', 'NETWORK_ERROR'], ['ERR_NETWORK', 'NETWORK_ERROR'],
+      ['secret-token-code', 'NETWORK_ERROR']]) {
+      const app = load('app-source.js', { axios: async () => {
+        throw Object.assign(new Error('secret https://signed.invalid/?token=private'), { code, config: { secret: true } });
+      } });
+      await assert.rejects(app.fetchAppPlayUrl('11'), error => {
+        assert.equal(error.code, code === 'secret-token-code' ? 'ERR_NETWORK' : code);
+        assert.doesNotMatch(error.message + JSON.stringify(error), /secret|signed\.invalid|private/);
+        return true;
+      });
+      const f = load('hongguo.js', { './app-source': app });
+      const result = await f.fetchPlayUrlSingle('11', '1', { quality: '720p' });
+      assert.equal(result.sources[0].code, expected);
+      assert.doesNotMatch(JSON.stringify(result), /secret|signed\.invalid|private/);
+    }
+  }],
+  ['App distinguishes HTTP, business refusal, absent model, parsing and unsafe media', async () => {
+    const first = { data: { '11': { video_model: { fallback_api: 'https://vod.snssdk.com/info' } } } };
+    const cases = [
+      [{ status: 403 }, null, 'HTTP_403'],
+      [{ data: { code: 8, message: 'secret' } }, null, 'BUSINESS_REJECTED'],
+      [{ data: { data: {} } }, null, 'MISSING_MODEL'],
+      [{ data: 'not json secret' }, null, 'INVALID_RESPONSE'],
+      [{ data: { data: { '11': { video_model: 'not json secret' } } } }, null, 'INVALID_RESPONSE'],
+      [{ data: first }, { code: 8, message: 'secret' }, 'BUSINESS_REJECTED'],
+      [{ data: first }, { video_info: { data: { video_list: { one: { codec_type: 'h264', width: 720, height: 1280, main_url: 'https://127.0.0.1/private' } } } } }, 'SECURITY_BLOCKED'],
+    ];
+    for (const [response, second, expected] of cases) {
+      const app = load('app-source.js', { axios: async config => ({ status: 200, headers: {},
+        ...(config.method === 'POST' ? response : { data: second }) }) });
+      const f = load('hongguo.js', { './app-source': app });
+      const result = await f.fetchPlayUrlSingle('11', '1', { quality: '720p' });
+      assert.equal(result.sources[0].code, expected);
+      assert.doesNotMatch(JSON.stringify(result), /secret|127\.0\.0\.1|private/);
+    }
+  }],
+  ['Web keeps null compatibility but reports actual failures on first and final fallback', async () => {
+    for (const [failure, expected] of [
+      [Object.assign(new Error('secret URL'), { response: { status: 404 } }), 'HTTP_404'],
+      [Object.assign(new Error('secret URL'), { code: 'ETIMEDOUT' }), 'TIMEOUT'],
+      [Object.assign(new Error('secret URL'), { code: 'ERR_WEB_MEDIA_ADDRESS' }), 'SECURITY_BLOCKED'],
+      [webPage().replace(media('web'), 'https://127.0.0.1/private'), 'SECURITY_BLOCKED'],
+      ['', 'MISSING_MODEL'],
+    ]) {
+      const f = load('hongguo.js', {
+        axios: { get: async () => { if (typeof failure !== 'string') throw failure; return { data: failure }; },
+          post: async () => ({ status: 200, headers: {}, data: Buffer.alloc(0) }) },
+        './app-source': { fetchAppPlayUrl: async () => { throw new Error('unavailable'); } },
+      });
+      assert.equal(await f.fetchPlayUrlFromWeb('11', '1'), null);
+      for (const skipWeb of [false, true]) {
+        if (skipWeb) f.markWebMediaFailure({ source: 'web', vid: '11' });
+        const result = await f.fetchPlayUrlSingle('11', '1', { force: true });
+        assert.equal(result.sources.find(item => item.source === 'web').code, expected);
+        assert.doesNotMatch(JSON.stringify(result), /secret|127\.0\.0\.1|private/);
+      }
+    }
+  }],
   ['Playback route budgets reach App after Web timeout and bound legacy API to one attempt', async () => {
     const webTimeouts = [], apiTimeouts = [];
     let appAvailable = true, webAvailable = false;

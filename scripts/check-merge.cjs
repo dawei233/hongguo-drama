@@ -15,7 +15,7 @@ const probe = file => JSON.parse(run('ffprobe', ['-v', 'error', '-show_streams',
 async function merge(label, files, compatible, mode = '') {
   const originals = files.map(file => { const stat = fs.statSync(file); return [stat.size, stat.mtimeMs]; });
   const handlers = {}, app = new EventEmitter();
-  Object.assign(app, { getVersion: () => 'test', getPath: () => root, commandLine: { appendSwitch() {} }, whenReady: () => ({ then() {} }) });
+  Object.assign(app, { getVersion: () => 'test', getPath: () => root, commandLine: { appendSwitch() {} }, requestSingleInstanceLock: () => true, whenReady: () => ({ then() {} }) });
   const electron = { app, ipcMain: { handle: (n, fn) => handlers[n] = fn }, protocol: { registerSchemesAsPrivileged() {} } };
   const context = vm.createContext({ require: name => name === 'electron' ? electron : name === './src/store' ? { getSettings: () => ({}), saveMergeTasks() {} } : req(name), __dirname: path.dirname(source), process, console: { log() {}, warn() {}, error() {} }, Buffer, URL, Response, Request, Headers, AbortController, setTimeout, clearTimeout });
   vm.runInContext(fs.readFileSync(source, 'utf8'), context);

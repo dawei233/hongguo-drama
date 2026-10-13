@@ -84,3 +84,5 @@ verification/
 rollback/
 dist-local/
 HANDOFF.md
+
+.local/

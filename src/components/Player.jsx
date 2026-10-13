@@ -10,6 +10,8 @@ import VideoEnhancement, { useVideoEnhancement } from './VideoEnhancement';
 import './Player.css';
 import { Play, Film, Download, Check, RefreshCw, Layers, X, Trash2, ChevronDown, Zap } from './icons';
 
+const localMediaKey = (seriesId, episode) => JSON.stringify([seriesId, episode?.vid, episode?.fileUrl, episode?.fileSize, episode?.taskId]);
+
 /**
  * Player —— 内置播放器
  *
@@ -18,7 +20,7 @@ import { Play, Film, Download, Check, RefreshCw, Layers, X, Trash2, ChevronDown,
  *  - 「边下边看」：下一集若还在下载，显示等待态并轮询，下完自动接上
  *  - 断点续播：按 series_id 记住看到第几集、第几秒
  */
-function Player({ target, onNavigate, active = true, portrait = false, actionsHidden = false, episodesOpen = false, setEpisodesOpen }) {
+function Player({ target, onNavigate, onSeriesSelected, active = true, portrait = false, actionsHidden = false, episodesOpen = false, setEpisodesOpen }) {
   const enhancement = useVideoEnhancement();
   const [shortcuts, setShortcuts] = useState(readShortcuts);
   const [showDanmakuControls, setShowDanmakuControls] = useState(false);
@@ -85,9 +87,10 @@ function Player({ target, onNavigate, active = true, portrait = false, actionsHi
   const playbackRateRef = useRef(1);
   const toastTimer = useRef(null);
   const pendingSeekRef = useRef(0); // 切集后要跳转的秒数
+  const pendingAutoplayRef = useRef(true);
   const lastSavedRef = useRef(0);
   const stateRef = useRef({ currentIndex, autoNext, activeSeriesId });
-  stateRef.current = { currentIndex, autoNext, activeSeriesId, waitingFor };
+  stateRef.current = { currentIndex, autoNext, activeSeriesId, waitingFor, downloadQuality, qualityLoading };
   const selectedSeriesRef = useRef('');
   const selectionVersion = useRef(0);
   const onlineRequestRef = useRef(null);
@@ -102,6 +105,9 @@ function Player({ target, onNavigate, active = true, portrait = false, actionsHi
   const onlineSourceRef = useRef(null);
   const lastVideoSrcRef = useRef('');
   const lastLoadRef = useRef(null);
+  const fallbackRef = useRef(null);
+  const fallbackAttemptRef = useRef(null);
+  const rejectedLocalRef = useRef(null);
 
   // 只有收到当前片源的 metadata 后才保存，避免旧元素的 pause 覆盖新集断点。
   const persistPosition = useCallback((force = false) => {
@@ -140,7 +146,9 @@ function Player({ target, onNavigate, active = true, portrait = false, actionsHi
     }
   }, []);
 
-  const resetPlayback = useCallback(() => {
+  const resetPlayback = useCallback((autoplay = true) => {
+    fallbackRef.current = null;
+    pendingAutoplayRef.current = autoplay;
     setAutoAdvancing(false);
     persistPosition(true);
     const previous = loadedMediaRef.current;
@@ -221,6 +229,57 @@ function Player({ target, onNavigate, active = true, portrait = false, actionsHi
     setDetail(res.data);
     return res.data;
   }, []);
+
+  const usableLocal = useCallback((ep, seriesId) => ep && !ep.locked && ep.status === 'completed' && ep.fileUrl
+    && localMediaKey(seriesId, ep) !== rejectedLocalRef.current, []);
+
+  const resumeLocal = useCallback((ep, seekTo, autoplay = true) => {
+    resetPlayback(autoplay);
+    onlineSourceRef.current = null;
+    setCompatMap(prev => { const next = { ...prev }; delete next[ep.vid_index]; return next; });
+    pendingSeekRef.current = seekTo;
+    setCurrentIndex(ep.vid_index);
+    setWaitingFor(null);
+  }, [resetPlayback]);
+
+  const isCurrentFallback = useCallback(intent => fallbackRef.current === intent
+    && intent.selection === selectionVersion.current && intent.media === mediaVersion.current
+    && intent.seriesId === selectedSeriesRef.current && intent.vidIndex === stateRef.current.currentIndex, []);
+
+  const recoverOnlineFailure = useCallback(async (ep, message) => {
+    const seekTo = currentPosition();
+    const autoplay = loadedMediaRef.current ? !loadedMediaRef.current.element.paused : pendingAutoplayRef.current;
+    resetPlayback(autoplay);
+    pendingSeekRef.current = seekTo;
+    const intent = { seriesId: selectedSeriesRef.current, vidIndex: ep.vid_index, vid: ep.vid,
+      selection: selectionVersion.current, media: mediaVersion.current, seekTo, autoplay, submitting: true };
+    fallbackRef.current = intent;
+    setPlaybackError(message);
+    try {
+      const data = await loadDetail(intent.seriesId);
+      if (!isCurrentFallback(intent)) return;
+      const latest = data?.episodes.find(item => item.vid_index === intent.vidIndex && item.vid === intent.vid);
+      if (!latest || latest.locked) throw new Error(latest?.locked ? '该集已锁定，请在来源平台确认' : '无法刷新本集状态，请重试');
+      if (usableLocal(latest, intent.seriesId)) { resumeLocal(latest, intent.seekTo, intent.autoplay); return; }
+      const key = `${intent.selection}:${intent.seriesId}:${intent.vid}`;
+      if (fallbackAttemptRef.current === key) throw new Error('本集已尝试下载，请在下载管理检查或手动重试下载');
+      const settings = stateRef.current.qualityLoading ? await window.electronAPI.getSettings() : null;
+      if (!isCurrentFallback(intent)) return;
+      const quality = stateRef.current.qualityLoading
+        ? (['1080p', '720p'].includes(settings?.download_quality) ? settings.download_quality : 'auto') : stateRef.current.downloadQuality;
+      fallbackAttemptRef.current = key;
+      setPlaybackError(''); setWaitingFor(intent.vidIndex);
+      // Enqueue validates quality and reuses an existing task; cancelling playback never stops that shared download.
+      const result = await window.electronAPI.downloadSingleEpisode(intent.seriesId, intent.vidIndex, quality);
+      if (!isCurrentFallback(intent)) return;
+      if (!result?.success) throw new Error(result?.error || '下载加入失败');
+      intent.submitting = false;
+    } catch (error) {
+      if (!isCurrentFallback(intent)) return;
+      intent.submitting = false;
+      setWaitingFor(null); setPlaybackError(`${message}；${error.message}`);
+    }
+  }, [currentPosition, resetPlayback, loadDetail, isCurrentFallback, usableLocal, resumeLocal]);
 
   const refreshCacheInfo = useCallback(async () => {
     try {
@@ -365,25 +424,33 @@ function Player({ target, onNavigate, active = true, portrait = false, actionsHi
     const timer = setInterval(async () => {
       if (busy) return;
       busy = true;
+      const version = mediaVersion.current;
+      const submitting = fallbackRef.current?.submitting;
       let d;
       try { d = await loadDetail(activeSeriesId); } catch (_) {} finally { busy = false; }
-      if (!d) return;
-      const { waitingFor: wf } = stateRef.current;
+      if (!d || version !== mediaVersion.current) return;
+      const intent = fallbackRef.current;
+      const recovery = intent && isCurrentFallback(intent) ? intent : null;
+      const wf = stateRef.current.waitingFor ?? recovery?.vidIndex;
       if (wf != null) {
         const ep = d.episodes.find((e) => e.vid_index === wf);
-        if (ep && !ep.locked && ep.status === 'completed') {
+        if (usableLocal(ep, String(activeSeriesId)) && (!recovery || ep.vid === recovery.vid)) {
           // 等待中的下一集下好了 -> 自动切过去
           setWaitingFor(null);
-          const seekTo = wf === stateRef.current.currentIndex ? currentPosition() : 0;
-          resetPlayback();
-          pendingSeekRef.current = seekTo;
-          setCurrentIndex(wf);
+          const sameEpisode = wf === stateRef.current.currentIndex;
+          const seekTo = recovery ? recovery.seekTo : sameEpisode ? currentPosition() : 0;
+          resumeLocal(ep, seekTo, recovery ? recovery.autoplay : !sameEpisode || !loadedMediaRef.current?.element.paused);
+        } else if (stateRef.current.waitingFor != null && !submitting && !recovery?.submitting
+          && (!ep || ep.locked || ['failed', 'stopped', 'cancelled', 'missing', 'completed'].includes(ep.status))) {
+          setWaitingFor(null);
+          setPlaybackError(ep?.status === 'stopped' || ep?.status === 'cancelled' ? '本集下载已停止，可在下载管理重试'
+            : ep?.status === 'completed' ? '已有本地文件无法播放，请在下载管理检查文件' : '本集下载失败或任务已移除，请在下载管理检查后重试');
         }
       }
     }, 2000);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, activeSeriesId, waitingFor, loadDetail, resetPlayback, currentPosition]);
+  }, [active, activeSeriesId, waitingFor, loadDetail, currentPosition, isCurrentFallback, usableLocal, resumeLocal]);
 
   const episodes = detail ? detail.episodes : [];
   const current = useMemo(
@@ -393,7 +460,7 @@ function Player({ target, onNavigate, active = true, portrait = false, actionsHi
 
   const compatUrl = current ? compatMap[current.vid_index] : null;
   const isOnlinePlaying = onlineVid && current && current.vid === onlineVid && onlineUrl;
-  const canPlay = !!(!playbackError && !onlineProgress && current && !current.locked && (compatUrl || (current.status === 'completed' && current.fileUrl) || isOnlinePlaying));
+  const canPlay = !!(!playbackError && !onlineProgress && current && !current.locked && (compatUrl || usableLocal(current, String(activeSeriesId)) || isOnlinePlaying));
   const playableSource = compatUrl || (isOnlinePlaying ? onlineUrl : current?.fileUrl) || '';
   // 原生全屏依附于 video 节点。准备下一集时保留结束帧，换源不换节点。
   if (canPlay) lastVideoSrcRef.current = playableSource;
@@ -429,6 +496,10 @@ function Player({ target, onNavigate, active = true, portrait = false, actionsHi
       if (compatRequestRef.current?.version === request.version && compatRequestRef.current?.vidIndex === vidIndex) return;
       autoCompatAttemptRef.current = { version: request.version, force };
       pendingSeekRef.current = currentPosition();
+      if (loadedMediaRef.current) pendingAutoplayRef.current = !loadedMediaRef.current.element.paused;
+      fallbackRef.current = null;
+      setWaitingFor(null);
+      setPlaybackError('');
       persistPosition(true);
       videoRef.current?.pause();
       loadedMediaRef.current = null;
@@ -444,7 +515,7 @@ function Player({ target, onNavigate, active = true, portrait = false, actionsHi
           seriesId: activeSeriesId,
           vidIndex,
           vid: ep.vid,
-          filePath: isOnlinePlaying ? null : ep.savePath || null,
+          filePath: onlineSourceRef.current === `${activeSeriesId}:${vidIndex}` ? null : ep.savePath || null,
           force,
         });
         if (compatRequestRef.current !== request || request.version !== mediaVersion.current) return;
@@ -464,6 +535,10 @@ function Player({ target, onNavigate, active = true, portrait = false, actionsHi
           setCompatProgress(null);
           if (autoCompat && !res?.cancelled && reconnectOnce()) return;
           const message = (res && res.error) || '转码失败';
+          if (!res?.cancelled && onlineSourceRef.current === `${activeSeriesId}:${vidIndex}`) {
+            await recoverOnlineFailure(ep, message);
+            return;
+          }
           setDecodeFailed(true);
           setCompatError(message);
           showToast(message);
@@ -473,12 +548,16 @@ function Player({ target, onNavigate, active = true, portrait = false, actionsHi
         compatRequestRef.current = null;
         setCompatProgress(null);
         if (autoCompat && reconnectOnce()) return;
+        if (onlineSourceRef.current === `${activeSeriesId}:${vidIndex}`) {
+          await recoverOnlineFailure(ep, '转码异常: ' + e.message);
+          return;
+        }
         setDecodeFailed(true);
         setCompatError('转码异常: ' + e.message);
         showToast('转码异常: ' + e.message);
       }
     },
-    [episodes, activeSeriesId, isOnlinePlaying, autoCompat, reconnectOnce, showToast, currentPosition, persistPosition]
+    [episodes, activeSeriesId, autoCompat, reconnectOnce, showToast, currentPosition, persistPosition, recoverOnlineFailure]
   );
 
   const tryAutoCompat = useCallback((vidIndex) => {
@@ -535,7 +614,7 @@ function Player({ target, onNavigate, active = true, portrait = false, actionsHi
    * 不占用下载目录；加密片源的准备文件会自动清理。
    */
   const startOnlinePlay = useCallback(
-    async (vidIndex, resumeAt, force = false) => {
+    async (vidIndex, resumeAt, force = false, autoplay = true) => {
       const ep = episodes.find((e) => e.vid_index === vidIndex);
       if (ep?.locked) { showToast('这一集需在来源平台解锁'); return; }
       if (!ep || !ep.vid) {
@@ -546,7 +625,7 @@ function Player({ target, onNavigate, active = true, portrait = false, actionsHi
       const seekTo = resumeAt ?? (vidIndex === stateRef.current.currentIndex ? currentPosition() : 0);
       const prefetched = !force && prefetchRef.current?.vid === ep.vid && prefetchRef.current?.seriesId === activeSeriesId ? prefetchRef.current : null;
       if (prefetched) prefetchRef.current = null;
-      resetPlayback();
+      resetPlayback(autoplay);
       setCompatMap(prev => { const next = { ...prev }; delete next[vidIndex]; return next; });
       const request = prefetched || { requestId: crypto.randomUUID(), vid: ep.vid };
       onlineRequestRef.current = request;
@@ -571,11 +650,7 @@ function Player({ target, onNavigate, active = true, portrait = false, actionsHi
           return;
         }
         if (!res || !res.success) {
-          releaseOnline();
-          showToast((res && res.error) || '在线播放准备失败');
-          setOnlineVid(null);
-          setOnlineProgress(null);
-          setPlaybackError((res && res.error) || '在线播放准备失败');
+          await recoverOnlineFailure(ep, (res && res.error) || '在线播放准备失败');
           return;
         }
         request.streamId = res.streamId;
@@ -586,22 +661,19 @@ function Player({ target, onNavigate, active = true, portrait = false, actionsHi
         refreshCacheInfo();
       } catch (e) {
         if (onlineRequestRef.current !== request) return;
-        releaseOnline();
-        showToast('在线播放失败: ' + e.message);
-        setOnlineVid(null);
-        setOnlineProgress(null);
-        setPlaybackError('在线播放失败: ' + e.message);
+        await recoverOnlineFailure(ep, '在线播放失败: ' + e.message);
       }
     },
-    [episodes, activeSeriesId, showToast, refreshCacheInfo, resetPlayback, releaseOnline, currentPosition]
+    [episodes, activeSeriesId, showToast, refreshCacheInfo, resetPlayback, releaseOnline, currentPosition, recoverOnlineFailure]
   );
 
   function reconnectOnce() {
     const key = `${activeSeriesId}:${currentIndex}`;
     if (!current?.vid || current.locked || reconnectAttemptRef.current === key) return false;
     reconnectAttemptRef.current = key;
+    if (onlineSourceRef.current !== key && current.status === 'completed') rejectedLocalRef.current = localMediaKey(String(activeSeriesId), current);
     showToast('正在重新获取本集片源…');
-    startOnlinePlay(currentIndex, currentPosition(), true);
+    startOnlinePlay(currentIndex, currentPosition(), true, loadedMediaRef.current ? !loadedMediaRef.current.element.paused : pendingAutoplayRef.current);
     return true;
   }
 
@@ -610,8 +682,9 @@ function Player({ target, onNavigate, active = true, portrait = false, actionsHi
     (vidIndex, resumeAt) => {
       const ep = episodes.find((e) => e.vid_index === vidIndex);
       if (!ep || ep.locked) return;
+      fallbackAttemptRef.current = null;
       reconnectAttemptRef.current = null;
-      if (ep.status !== 'completed' || !ep.fileUrl) {
+      if (!usableLocal(ep, String(activeSeriesId))) {
         startOnlinePlay(vidIndex, resumeAt);
         return;
       }
@@ -622,10 +695,16 @@ function Player({ target, onNavigate, active = true, portrait = false, actionsHi
       setWaitingFor(null);
       pendingSeekRef.current = seekTo;
     },
-    [episodes, activeSeriesId, resetPlayback, startOnlinePlay, currentPosition]
+    [episodes, activeSeriesId, resetPlayback, startOnlinePlay, currentPosition, usableLocal]
   );
 
-  const retryPlayback = () => {
+  const retryPlayback = async () => {
+    const version = mediaVersion.current, selection = selectionVersion.current;
+    let data;
+    try { data = await loadDetail(activeSeriesId); } catch (_) {}
+    if (version !== mediaVersion.current || selection !== selectionVersion.current) return;
+    const latest = data?.episodes.find(ep => ep.vid_index === currentIndex && ep.vid === current?.vid);
+    if (usableLocal(latest, String(activeSeriesId))) { resumeLocal(latest, currentPosition()); return; }
     setCompatMap(prev => { const next = { ...prev }; delete next[currentIndex]; return next; });
     if (onlineSourceRef.current === `${activeSeriesId}:${currentIndex}` || current?.status !== 'completed') {
       reconnectAttemptRef.current = null;
@@ -728,7 +807,7 @@ function Player({ target, onNavigate, active = true, portrait = false, actionsHi
     }
     pendingSeekRef.current = 0;
     if (compatMap[currentIndex]) releaseOnline();
-    v.play().catch(() => { if (playbackVersion === mediaVersion.current) setAutoAdvancing(false); });
+    if (pendingAutoplayRef.current) v.play().catch(() => { if (playbackVersion === mediaVersion.current) setAutoAdvancing(false); });
   };
 
   const toggleFullscreen = useCallback(async () => {
@@ -788,6 +867,9 @@ function Player({ target, onNavigate, active = true, portrait = false, actionsHi
     persistPosition(true);
     const version = ++selectionVersion.current;
     selectedSeriesRef.current = String(sid);
+    fallbackAttemptRef.current = null;
+    rejectedLocalRef.current = null;
+    onSeriesSelected?.(String(sid));
     pendingTargetRef.current = null;
     reconnectAttemptRef.current = null;
     onlineSourceRef.current = null;
@@ -814,7 +896,7 @@ function Player({ target, onNavigate, active = true, portrait = false, actionsHi
     } finally {
       if (version === selectionVersion.current) setLoading(false);
     }
-  }, [persistPosition, resetPlayback, loadDetail, showToast]);
+  }, [persistPosition, resetPlayback, loadDetail, showToast, onSeriesSelected]);
 
   // 初次进入与浏览点播共用一次载入，避免两个初始化请求互相覆盖。
   useEffect(() => {
@@ -902,11 +984,14 @@ function Player({ target, onNavigate, active = true, portrait = false, actionsHi
 
   const downloadEpisode = async (vidIndex) => {
     if (qualityLoading || !episodes.some((ep) => ep.vid_index === vidIndex && !ep.locked)) return;
+    const selection = selectionVersion.current;
+    const media = mediaVersion.current;
     try {
       const res = await window.electronAPI.downloadSingleEpisode(activeSeriesId, vidIndex, downloadQuality);
       if (res && res.success) {
         showToast(res.count > 0 ? `第 ${vidIndex} 集已加入下载队列` : `第 ${vidIndex} 集已在队列中`);
-        if (currentIndex === vidIndex) setWaitingFor(vidIndex);
+        if (selection === selectionVersion.current && media === mediaVersion.current
+          && String(activeSeriesId) === selectedSeriesRef.current && stateRef.current.currentIndex === vidIndex) setWaitingFor(vidIndex);
       } else {
         showToast((res && res.error) || '加入下载失败');
       }
@@ -1311,7 +1396,11 @@ function Player({ target, onNavigate, active = true, portrait = false, actionsHi
               const unavailableOnline = errorCode === 4 && videoSrc === onlineUrl;
               if (unavailableOnline && reconnectOnce()) return;
               const failedDecode = [3, 4].includes(errorCode);
-              if (!failedDecode && event.currentTarget.error?.code === 2 && reconnectOnce()) return;
+              if (!failedDecode && errorCode === 2 && reconnectOnce()) return;
+              if (isOnlinePlaying && (errorCode === 2 || unavailableOnline)) {
+                recoverOnlineFailure(current, '在线播放失败，正在尝试本地文件或下载');
+                return;
+              }
               if (!failedDecode) {
                 const seekTo = currentPosition(); resetPlayback(); pendingSeekRef.current = seekTo;
                 setPlaybackError('视频加载失败，请重试本集或检查网络');
@@ -1333,7 +1422,8 @@ function Player({ target, onNavigate, active = true, portrait = false, actionsHi
             {playbackError ? (
               <><Film size={34} /><p role="alert">{playbackError}</p><div className="player-placeholder-actions">
                 <button className="btn btn-primary" onClick={retryPlayback}>{current?.status === 'completed' ? '重试本集' : '重试本集（在线播放）'}</button>
-                {current?.status === 'completed' && <button className="btn btn-outline" onClick={() => startOnlinePlay(currentIndex, undefined, true)}>重新连接片源</button>}
+                {current?.vid && <button className="btn btn-outline" onClick={() => startOnlinePlay(currentIndex, undefined, true)}>重新连接片源</button>}
+                {fallbackRef.current && !fallbackRef.current.submitting && <button className="btn btn-outline" onClick={() => startCompatPlay(currentIndex, true)}>转码后播放</button>}
               </div></>
             ) : onlineProgress && onlineProgress.vid && (!current || current.vid === onlineProgress.vid) ? (
               <>
@@ -1361,7 +1451,8 @@ function Player({ target, onNavigate, active = true, portrait = false, actionsHi
                     </div>
                   ) : null;
                 })()}
-                <span className="player-placeholder-sub">也可以直接在线播放这一集</span>
+                <span className="player-placeholder-sub">下载完成后继续本集；取消等待不会停止下载</span>
+                <button className="btn btn-outline" onClick={() => stopPlayback('已取消等待，下载会继续；可在下载管理查看')}>取消等待</button>
               </>
             ) : current?.locked || (episodes.length > 0 && episodes.every((ep) => ep.locked)) ? (
               <><Film size={34} /><p>需在来源平台解锁后观看</p><span className="player-placeholder-sub">本应用不提供解锁</span></>

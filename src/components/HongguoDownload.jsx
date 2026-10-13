@@ -2,10 +2,13 @@ import React, { useState, useRef, useEffect } from 'react';
 import './HongguoDownload.css';
 import { Film, Download, CheckSquare, Square, RefreshCw, Folder, Link2, Search, Play } from './icons';
 import SearchPanel from './SearchPanel';
+import useMediaSources from './useMediaSources';
+import { mediaSourceLabel } from './mediaSourcesModel.mjs';
 import { isSubmitKey, parseEpisodeRange } from './episodeRange';
 
 
 function HongguoDownload({ onNavigate, active = true }) {
+  const { sources: mediaSources, revision: sourceRevision } = useMediaSources();
   const [tab, setTab] = useState('search'); // 'search' | 'input'
   const [inputUrl, setInputUrl] = useState('');
   const [loading, setLoading] = useState(false);
@@ -27,6 +30,10 @@ function HongguoDownload({ onNavigate, active = true }) {
   const searchVersion = resolveRequest.current;
 
   useEffect(() => () => { resolveRequest.current++; }, []);
+  useEffect(() => {
+    resolveRequest.current++; pendingResolve.current = null; setLoading(false);
+    setSeriesData(current => current?.series_id?.startsWith('custom:') ? null : current);
+  }, [sourceRevision]);
 
   useEffect(() => {
     if (!active) return;
@@ -316,7 +323,7 @@ function HongguoDownload({ onNavigate, active = true }) {
               <div className="series-meta">
                 <h3 className="series-title">《{seriesData.series_title}》</h3>
                 <div className="series-tags">
-                  <span className="badge">{String(seriesData.series_id).startsWith('hema:') ? '河马短剧' : String(seriesData.series_id).startsWith('xifan:') ? '西饭短剧' : '红果短剧'}</span>
+                  <span className="badge">{mediaSourceLabel(seriesData.series_id, mediaSources)}</span>
                   <span className="badge">共 {seriesData.total} 集</span>
                   <span className="badge badge-secondary">已选 {selectedVids.size} 集</span>
                 </div>

@@ -13,11 +13,20 @@ const req = createRequire(source);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 function load(fetchPlayUrlSingle, overrides = {}) {
   const handlers = {}, protocols = {}, app = new EventEmitter();
-  Object.assign(app, { getVersion: () => 'test', getPath: () => root, commandLine: { appendSwitch() {} }, whenReady: () => ({ then() {} }) });
+  Object.assign(app, { getVersion: () => 'test', getPath: () => root, commandLine: { appendSwitch() {} }, requestSingleInstanceLock: () => true, whenReady: () => ({ then() {} }) });
   const electron = { app, ipcMain: { handle: (n, f) => handlers[n] = f }, protocol: { registerSchemesAsPrivileged() {}, handle: (n, f) => protocols[n] = f } };
   const native = { fetchPlayUrlSingle, UA: 'test', WEB_UA: 'browser-test', WEB_REFERER: 'https://hongguoduanju.com/', VIDEO_REFERER: 'https://example.com/', deriveKey: () => Buffer.alloc(16), decryptMp4Buffer: b => b };
+  // These transport fixtures intentionally use a loopback server; the real guard has its own boundary tests.
+  const mediaGuard = req('./src/native/web-media-guard');
+  overrides = { './src/native/web-media-guard': { webMediaRequestOptions: value => {
+    if (new URL(value).hostname === '127.0.0.1') return {};
+    return mediaGuard.webMediaRequestOptions(value);
+  } }, ...overrides };
   const context = vm.createContext({ require: n => overrides[n] || (n === 'electron' ? electron : n === './src/native/hongguo' ? native : n === './src/store' ? { saveTasks() {}, getSettings: () => ({ root }) } : req(n)), __dirname: path.dirname(source), console: { log() {}, warn() {}, error() {} }, process, Buffer, URL, Response, Request, Headers, AbortController, setTimeout, clearTimeout });
   vm.runInContext(fs.readFileSync(source, 'utf8'), context, { filename: source });
+  // These transport/decryption fixtures are synthetic; real media validity is checked separately.
+  context.probeVideoInfo = async () => ({ w: 1080, h: 1920, duration: 12, codec: 'h264' });
+  context.resolveFfmpeg = () => '/fixture/ffprobe';
   context.registerStreamProtocol();
   context.registerLocalProtocol();
   return { context, handlers, protocols, run: s => vm.runInContext(s, context) };
@@ -292,7 +301,7 @@ function load(fetchPlayUrlSingle, overrides = {}) {
   await check('recovery: releasing superseded prefetch cancels only its own transfer', async () => {
     const h = hload(async () => ({ url: base + '/range' }));
     let finishBody, oldSignal;
-    h.context.fetchDecryptedEpisode = async (_vid, _progress, _sid, _info, signal) => {
+    h.context.fetchDecryptedEpisodeOnce = async (_vid, _progress, _sid, _info, signal) => {
       oldSignal = signal; return new Promise(resolve => { finishBody = resolve; });
     };
     const old = h.handlers['prepare-online-play']({}, { vid: 'superseded', requestId: 'old-prefetch', prefetch: true });

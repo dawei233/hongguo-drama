@@ -14,7 +14,7 @@ let failures = 0, serial = 0;
 function load({ permission, manual = false, probe, encoder = 'libx264', exitCodes = [] } = {}) {
   const dir = path.join(root, String(++serial)); fs.mkdirSync(dir);
   const handlers = {}, events = [], children = [], app = new EventEmitter();
-  Object.assign(app, { getVersion: () => 'test', getPath: () => dir, commandLine: { appendSwitch() {} }, whenReady: () => ({ then() {} }) });
+  Object.assign(app, { getVersion: () => 'test', getPath: () => dir, commandLine: { appendSwitch() {} }, requestSingleInstanceLock: () => true, whenReady: () => ({ then() {} }) });
   const electron = { app, ipcMain: { handle: (name, fn) => handlers[name] = fn }, protocol: { registerSchemesAsPrivileged() {} } };
   const metrics = { media: 0, encoder: 0, permissions: 0 };
   const childProcess = { spawn(_file, args) {

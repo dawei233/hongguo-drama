@@ -19,7 +19,7 @@ const sequel = { series_id: '1000002', series_title: '春日来信第二季' };
 const clone = value => JSON.parse(JSON.stringify(value));
 const app = new EventEmitter();
 Object.assign(app, { getVersion: () => 'test', getPath: () => root,
-  commandLine: { appendSwitch() {} }, whenReady: () => ({ then() {} }) });
+  commandLine: { appendSwitch() {} }, requestSingleInstanceLock: () => true, whenReady: () => ({ then() {} }) });
 const handlers = {}, events = [], notifications = [];
 let fetchDetail, search;
 class Notification extends EventEmitter {

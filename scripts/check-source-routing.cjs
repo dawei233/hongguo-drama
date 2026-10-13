@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
-const { createHash } = require('node:crypto');
+const { createHash, randomUUID } = require('node:crypto');
 const source = fs.readFileSync(path.join(__dirname, '../main.js'), 'utf8');
 function extract(name) {
   const start = source.indexOf(`function ${name}(`);
@@ -10,17 +10,28 @@ function extract(name) {
   return source.slice(source.slice(Math.max(0, start - 6), start) === 'async ' ? start - 6 : start, source.indexOf('\n}', start) + 2);
 }
 const checks = [
-  ['compatibility cache rechecks access before sharing or reusing results', async () => {
+  ['compatibility cache and shared preparation cannot bypass source access', async () => {
     const handlers = {};
-    const context = { ipcMain: { handle: (name, fn) => handlers[name] = fn },
+    let cacheReads = 0;
+    const context = { AbortController, randomUUID, console, ipcMain: { handle: (name, fn) => handlers[name] = fn },
       hongguo: { fetchEpisodeList: async () => ({ episodes: [{ vid: 'xifan:huabo:a:2', vid_index: 2, locked: true }] }) },
-      compatPreparing: new Map([['cached', Promise.resolve({ success: true })]]), compatPathFor: () => 'cached',
-      transcodeForPlayback: () => Promise.resolve({ success: true }) };
+      compatPreparing: new Map(), compatRequests: new Map(), compatClearing: null, compatPathFor: () => 'cached',
+      fs: { existsSync: () => { cacheReads++; return true; }, statSync: () => ({ size: 200000 }), utimesSync() {} },
+      localPlayUrl: () => 'file:///cached.mp4' };
+    vm.runInNewContext(extract('transcodeForPlayback'), context);
     const start = source.indexOf("ipcMain.handle('transcode-for-playback'");
     vm.runInNewContext(source.slice(start, source.indexOf('\n});', start) + 4), context);
-    const result = await handlers['transcode-for-playback']({}, { seriesId: 'xifan:huabo:a', vidIndex: 2, vid: 'xifan:huabo:a:2', filePath: '/cached.mp4' });
-    assert.equal(result.success, false, 'locked episode must not reuse the in-flight/cache result');
-    assert.match(result.error, /锁定/);
+    // A cache is not a downloaded original; exercise the real access check before reading it.
+    const payload = { seriesId: 'xifan:huabo:a', vidIndex: 2, vid: 'xifan:huabo:a:2' };
+    const first = handlers['transcode-for-playback']({}, payload);
+    const shared = handlers['transcode-for-playback']({}, payload);
+    assert.equal(context.compatPreparing.size, 1);
+    assert.equal(context.compatRequests.size, 2);
+    for (const result of await Promise.all([first, shared])) {
+      assert.equal(result.success, false, 'locked episode must not reuse the in-flight/cache result');
+      assert.match(result.error, /锁定/);
+    }
+    assert.equal(cacheReads, 0, 'access must be checked before reading the existing cache');
   }],
   ['source URL accepts only the exact HTTPS origin', () => {
     const context = { URL, SEARCH_SITE: 'https://hongguoduanju.com' };
@@ -32,13 +43,16 @@ const checks = [
     const context = { path, createHash, sanitizeFolderName: value => value };
     vm.runInNewContext(extract('seriesDownloadDir'), context);
     const resolve = context.seriesDownloadDir;
-    assert.equal(resolve('/downloads', '123', '同名剧'), '/downloads/红果短剧/同名剧');
+    const official = resolve('/downloads', '123', '同名剧');
+    assert.equal(official, '/downloads/红果短剧/同名剧-' + createHash('sha256').update('123').digest('hex').slice(0, 12));
+    assert.notEqual(official, resolve('/downloads', '456', '同名剧'));
     const a = resolve('/downloads', 'xifan:huabo:a', '同名剧');
     assert.notEqual(a, resolve('/downloads', '123', '同名剧'));
     assert.notEqual(a, resolve('/downloads', 'xifan:huabo:b', '同名剧'));
   }],
   ['queue rejects spoofed lock state before filesystem writes', async () => {
-    const context = { hongguo: { fetchEpisodeList: async () => ({ episodes: [{ vid: 'xifan:huabo:a:2', vid_index: 2, locked: true }] }) } };
+    const context = { getCurrentSettings: () => ({}), normalizeDownloadQuality: () => 'auto',
+      hongguo: { fetchEpisodeList: async () => ({ episodes: [{ vid: 'xifan:huabo:a:2', vid_index: 2, locked: true }] }) } };
     vm.runInNewContext(extract('enqueueEpisodes'), context);
     await assert.rejects(async () => context.enqueueEpisodes({ seriesId: 'xifan:huabo:a', seriesTitle: 'test', episodes: [{ vid: 'xifan:huabo:a:2', vid_index: 2, locked: false }] }), /锁定/);
   }],

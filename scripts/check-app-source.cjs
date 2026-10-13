@@ -26,6 +26,7 @@ function encodedKey() {
 }
 function fixture({ wrongVid = false, fallback = 'https://vod.snssdk.com/info', media = 'https://v3-reading.qznovelvod.com/video.mp4', redirect = '', malformedKey = false, videoList = null, encrypted = true } = {}) {
   const calls = [];
+  const signedDeviceIds = [];
   const seed = Buffer.alloc(16, 7);
   const constants = Buffer.from('4dd4c2e6b83162090e52b3c7a6733ba41cb2462b829ab58a196b39db57177524f49baf7f08e8d68d26a72e37c1a95a2f1f05a51892aef2949732b62a38aadd58', 'hex');
   const material = crypto.createHash('sha512').update(Buffer.concat([crypto.createHash('sha512').update(seed).digest(), constants])).digest();
@@ -36,7 +37,7 @@ function fixture({ wrongVid = false, fallback = 'https://vod.snssdk.com/info', m
     assert.equal(config.maxRedirects, 0);
     assert.ok(config.timeout > 0 && config.timeout <= 12000);
     assert.ok(config.signal);
-    if (calls.length === 1) {
+    if (config.method === 'POST') {
       assert.ok(config.headers['x-medusa']);
       assert.ok(config.headers['x-gorgon']);
       const model = { video_model: JSON.stringify({ fallback_api: fallback }) };
@@ -48,7 +49,7 @@ function fixture({ wrongVid = false, fallback = 'https://vod.snssdk.com/info', m
       good: { main_url: encryptedUrl, codec_type: 'h264', quality_desc: '720P', spade_a: malformedKey ? 'bad' : encodedKey() },
     } } } }) };
   };
-  const context = { Buffer, URL, URLSearchParams, AbortSignal, module: { exports: {} },
+  const context = { Buffer, URL, URLSearchParams, AbortSignal, signedDeviceIds, module: { exports: {} },
     require: name => {
       if (name === 'axios') return axios;
       if (name === './sm3') return require(path.join(nativeDir, 'sm3'));
@@ -60,8 +61,14 @@ function fixture({ wrongVid = false, fallback = 'https://vod.snssdk.com/info', m
       throw new Error(`Unexpected dependency: ${name}`);
     },
   };
-  vm.runInNewContext(fs.readFileSync(path.join(nativeDir, 'app-source.js'), 'utf8'), context);
-  return { fetch: context.module.exports.fetchAppPlayUrl, calls };
+  vm.runInNewContext(fs.readFileSync(path.join(nativeDir, 'app-source.js'), 'utf8') + `
+    const originalDeviceProto = deviceProto;
+    deviceProto = function (deviceId) {
+      signedDeviceIds.push(deviceId);
+      return originalDeviceProto(deviceId);
+    };
+  `, context);
+  return { fetch: context.module.exports.fetchAppPlayUrl, calls, signedDeviceIds };
 }
 
 function nativeFixture() {
@@ -81,6 +88,21 @@ const appRows = videoList => fixture({ videoList, encrypted: false }).fetch('11'
 const turn = () => new Promise(resolve => setImmediate(resolve));
 
 const checks = [
+  ['sequential and concurrent lookups isolate request identities and signed device fields', async () => {
+    const f = fixture();
+    await f.fetch('11');
+    await f.fetch('11');
+    await Promise.all([f.fetch('11'), f.fetch('11'), f.fetch('11')]);
+    const requests = f.calls.filter(call => call.method === 'POST');
+    assert.equal(requests.length, 5, 'one model request per lookup; no retry loop');
+    for (const field of ['iid', 'device_id']) {
+      const ids = requests.map(call => new URL(call.url).searchParams.get(field));
+      assert.ok(ids.every(id => /^\d{16}$/.test(id)), `${field} must stay a valid synthetic identifier`);
+      assert.equal(new Set(ids).size, requests.length, `${field} must not be reused across lookups`);
+      if (field === 'device_id') assert.deepEqual(ids, f.signedDeviceIds, 'URL and signed device fields must match');
+    }
+    assert.equal(f.calls.length, 10, 'each lookup retains its two-stage flow');
+  }],
   ['App H264 takes priority over higher-resolution HEVC', async () => {
     const result = await appRows({ hd: { main_url: mediaUrl('hevc'), codec_type: 'hevc', quality_desc: '1080P' },
       sd: { main_url: mediaUrl('avc'), codec_type: 'h264', quality_desc: '720P' } });

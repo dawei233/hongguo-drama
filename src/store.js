@@ -10,18 +10,37 @@ let dataFile = null;
 let cache = null; // { settings, tasks }
 let durable = '{}';
 let errorHandler = null;
+let readError = null;
+const READ_ERROR_MESSAGE = '读取本地数据失败，已保留原文件并暂停保存；请检查文件或目录权限，恢复数据后重启应用。';
+
+function reportReadError() {
+  try { errorHandler?.({ error: READ_ERROR_MESSAGE }); } catch {}
+}
 
 function loadCache() {
   if (!dataFile) throw new Error('store 未初始化');
   if (cache) return cache;
   try {
-    if (fs.existsSync(dataFile)) {
-      cache = JSON.parse(fs.readFileSync(dataFile, 'utf8'));
+    cache = JSON.parse(fs.readFileSync(dataFile, 'utf8'));
+    if (!cache || typeof cache !== 'object' || Array.isArray(cache)) {
+      throw new TypeError('Invalid store document');
+    }
+    for (const key of ['tasks', 'series', 'mergeTasks']) {
+      if (key in cache && !Array.isArray(cache[key])) throw new TypeError(`Invalid store ${key}`);
+    }
+    for (const key of ['settings', 'playback']) {
+      if (key in cache && (!cache[key] || typeof cache[key] !== 'object' || Array.isArray(cache[key]))) {
+        throw new TypeError(`Invalid store ${key}`);
+      }
     }
   } catch (e) {
-    console.error('[Store] 读取数据文件失败，使用空数据:', e.message);
+    cache = {};
+    if (e.code !== 'ENOENT') {
+      readError = new Error(READ_ERROR_MESSAGE, { cause: e });
+      readError.code = 'STORE_READ_FAILED';
+      reportReadError();
+    }
   }
-  if (!cache || typeof cache !== 'object') cache = {};
   if (!Array.isArray(cache.tasks)) cache.tasks = [];
   if (!cache.settings || typeof cache.settings !== 'object') cache.settings = {};
   durable = JSON.stringify(cache);
@@ -30,6 +49,11 @@ function loadCache() {
 
 function flush() {
   if (!dataFile) return;
+  if (readError) {
+    cache = JSON.parse(durable);
+    reportReadError();
+    throw readError;
+  }
   const temporary = dataFile + '.tmp';
   try {
     fs.mkdirSync(path.dirname(dataFile), { recursive: true });
@@ -48,6 +72,7 @@ function flush() {
 function init(filePath) {
   dataFile = filePath;
   cache = null;
+  readError = null;
   loadCache();
 }
 

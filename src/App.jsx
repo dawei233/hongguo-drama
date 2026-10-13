@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import { Film, Download, Settings, Play, Home, Search, Clock } from './components/icons';
 import HongguoDownload from './components/HongguoDownload';
 import DownloadManager from './components/DownloadManager';
@@ -42,6 +42,10 @@ export default function App() {
   const [appInfo, setAppInfo] = useState(null); // { version, brand, appName }
   const [playerMounted, setPlayerMounted] = useState(false);
   const [playerTarget, setPlayerTarget] = useState(null); // 浏览页点播 -> 播放页选中
+  const rememberPlayerSeries = useCallback((seriesId) => {
+    // 保留命令时间戳避免重复初始化；重新挂载时只按当前系列的最新断点恢复。
+    setPlayerTarget(target => ({ seriesId, resume: true, ts: target?.ts }));
+  }, []);
 
   useEffect(() => {
     window.electronAPI.getWindowLayout?.().then(setLayout);
@@ -78,7 +82,7 @@ export default function App() {
       case 'browse':
         return <Browse active={page === id} onNavigate={navigate} />;
       case 'player':
-        return playerMounted ? <Player portrait={layout === 'portrait'} episodesOpen={episodesOpen} setEpisodesOpen={setEpisodesOpen} actionsHidden={actionsHidden || (borderless && layout === 'portrait')} active={page === id} target={playerTarget} onNavigate={navigate} /> : null;
+        return playerMounted ? <Player portrait={layout === 'portrait'} episodesOpen={episodesOpen} setEpisodesOpen={setEpisodesOpen} actionsHidden={actionsHidden || (borderless && layout === 'portrait')} active={page === id} target={playerTarget} onSeriesSelected={rememberPlayerSeries} onNavigate={navigate} /> : null;
       case 'feed':
         return page === 'feed' ? <DramaFeed onNavigate={navigate} /> : null;
       case 'calendar':

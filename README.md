@@ -25,7 +25,7 @@
 
 本仓库是 [jackotom/hongguo-drama](https://github.com/jackotom/hongguo-drama) 的派生版，跟随上游同步，只增加下面这一项能力：
 
-**真弹幕**。上游 v1.6 名为「弹幕」的功能实为**本集评论的滚动条**（其设置面板自述"与视频时间无对应"，每集只能拿到官网公开的约 15 条）。本 fork 增加了带播放时间轴的弹幕：按进度投放，拖动进度条会重新对齐，支持字号、透明度、速度、显示区域、同屏密度与屏蔽词。
+**真弹幕**。上游名为「弹幕」的功能（截至 v1.7 未变）实为**本集评论的滚动条**（其设置面板自述"与视频时间无对应"，每集只能拿到官网公开的约 15 条）。本 fork 增加了带播放时间轴的弹幕：按进度投放，拖动进度条会重新对齐，支持字号、透明度、速度、显示区域、同屏密度与屏蔽词。
 
 - 弹幕来源可在播放器设置与「设置 → 弹幕来源」中切换：**官方弹幕**（默认，带时间轴）或**本集评论**（上游原有实现，不依赖任何签名接口，作为备用来源）。
 - 官方弹幕走的是需要签名头的非公开接口，**属于不可控的第三方依赖**：上游改动后可能失效。失效时会如实提示原因并可切回「本集评论」，不会把"取不到"说成"本集没有弹幕"。
@@ -39,18 +39,18 @@
 
 ## 下载与安装
 
-**当前正式版：1.6**。按你的设备选择一个文件即可，媒体工具已内置，无需另装 Node.js、Homebrew 或 FFmpeg。
+**当前正式版：1.7**。按你的设备选择一个文件即可，媒体工具已内置，无需另装 Node.js、Homebrew 或 FFmpeg。
 
-| 设备 | 下载 1.6 | 安装方式 |
+| 设备 | 下载 1.7 | 安装方式 |
 |---|---|---|
-| Apple 芯片 Mac（M 系列），macOS 13+ | [下载 DMG](https://github.com/jackotom/hongguo-drama/releases/download/v1.6/Hongguo-1.6-mac-arm64.dmg) | 打开 DMG，拖入「应用程序」后启动 |
-| Intel Mac，macOS 13+ | [下载 DMG](https://github.com/jackotom/hongguo-drama/releases/download/v1.6/Hongguo-1.6-mac-x64.dmg) | 打开 DMG，拖入「应用程序」后启动 |
-| Windows x64 | [下载 EXE](https://github.com/jackotom/hongguo-drama/releases/download/v1.6/hongguo-downloader-1.6.0-win-x64.exe) · [下载 ZIP](https://github.com/jackotom/hongguo-drama/releases/download/v1.6/hongguo-downloader-1.6.0-win-x64.zip) | 便携版，直接运行 EXE；ZIP 解压后运行同一程序 |
+| Apple 芯片 Mac（M 系列），macOS 13+ | [下载 DMG](https://github.com/jackotom/hongguo-drama/releases/download/v1.7/Hongguo-1.7-mac-arm64.dmg) | 打开 DMG，拖入「应用程序」后启动 |
+| Intel Mac，macOS 13+ | [下载 DMG](https://github.com/jackotom/hongguo-drama/releases/download/v1.7/Hongguo-1.7-mac-x64.dmg) | 打开 DMG，拖入「应用程序」后启动 |
+| Windows x64 | [下载 EXE](https://github.com/jackotom/hongguo-drama/releases/download/v1.7/hongguo-downloader-1.7.0-win-x64.exe) · [下载 ZIP](https://github.com/jackotom/hongguo-drama/releases/download/v1.7/hongguo-downloader-1.7.0-win-x64.zip) | 便携版，直接运行 EXE；ZIP 解压后运行同一程序 |
 
-[查看最新正式版](https://github.com/jackotom/hongguo-drama/releases/latest) · [1.6 更新说明与源码](https://github.com/jackotom/hongguo-drama/releases/tag/v1.6) · [SHA256 校验文件](https://github.com/jackotom/hongguo-drama/releases/download/v1.6/SHA256SUMS.txt)
+[查看最新正式版](https://github.com/jackotom/hongguo-drama/releases/latest) · [1.7 更新说明与源码](https://github.com/jackotom/hongguo-drama/releases/tag/v1.7) · [SHA256 校验文件](https://github.com/jackotom/hongguo-drama/releases/download/v1.7/SHA256SUMS.txt)
 
 - **更新旧版**：先退出应用，再替换程序，保留原有用户资料目录。软件只提示更新，不会自动下载或安装。
-- **Mac**：1.6 两种架构的应用与 DMG 均已完成 Developer ID 签名、Apple 公证及票据装订；无需全局关闭 Gatekeeper。公证不等于 App Store 审核或内容授权。
+- **Mac**：1.7 两种架构的应用与 DMG 均已完成 Developer ID 签名、Apple 公证及票据装订；无需全局关闭 Gatekeeper。公证不等于 App Store 审核或内容授权。
 - **Windows**：EXE 尚未签名，可能出现系统安全提示。请核对下载来源；首次启动会展开临时运行文件，设置与观看记录仍保存在用户资料目录。
 - **普通使用只需安装包**：Assets 中的 `source` 文件和 GitHub 自动生成的 Source code 是源码，不能直接运行。
 
@@ -62,6 +62,23 @@
 2. 在「发现短剧」浏览，或在「搜索与下载」输入剧名、红果分享链接或剧集 ID。
 3. 打开详情点「立即播放」，也可选择集数与清晰度加入下载队列。
 4. 下次从「我的剧库」或「观看记录」接着看；下载进度、失败重试和整剧合并在「下载管理」。
+
+## 1.7 更新重点
+
+
+**下载仍可能失败。** 平台风控可能限制取址；App 取址已采用每次请求更换合成设备标识符的方式尝试绕过按设备限制，但不保证所有剧集可用或下载成功。失败任务会保留，可稍后重试。
+
+本软件用于学习研究，建议体验后 24 小时内自行删除；请勿冒充官方或以虚假授权名义收费。开源权利义务以 [GPLv3](LICENSE) 为准。上述倡议不代表获得平台或版权方授权，也不构成免责承诺。
+
+- 取址遭遇临时拒绝时，按 3、8、15 分钟最多延迟重试三次；可暂停或停止，不无限重试。
+- 修复本地资料读取失败后的覆盖风险、多实例争抢资料、合并期间误删分集、合并选中旧记录，以及下载完成前的视频有效性检查。
+- 修复下载回复晚到后跳集、暂停状态在同集换源后丢失、返回剧库重复执行旧点播指令。完整预缓存可经质量检查后保存，减少重复取流。
+- 热播推荐保留四种榜单，新增“摇一摇”短剧签筒。支持全部来源、单来源随机，避免连续抽到同部，结果在统一剧库播放。
+- 设置新增自定义播放源：支持苹果 CMS V10 JSON API 的目录、搜索、详情与选集，以及明确 MP4/M3U8 直链的播放和下载。已启用来源加入发现、全部搜索和摇一摇。
+- M3U8 仅支持点播；先将清单、分片和密钥逐项检查并准备到本地，再播放或保存为 MP4。支持普通与 AES-128 HLS，不支持直播、DRM、解析网页、远程插件和付费解锁。
+- 自定义源可测试、启停、编辑和删除；删除配置不删除本地视频。沿用现有代理设置，代理端最终 DNS 由用户所选代理负责。
+
+源码基于公开 v1.6，保留原播放恢复与三来源功能。公开发行与平台验证状态以发行页为准。详见 [1.7 升级说明](docs/release-1.7.md)。
 
 ## 1.6 更新重点
 
@@ -263,9 +280,9 @@ https://github.com/user-attachments/assets/b95f4f60-b57c-495f-a30e-62ac2b0bda11
 
 ## 版本与验证范围
 
-当前正式版为 **1.6**，源码配置版本为 `1.6.0`。具体安装包、签名公证与验证记录，以[对应发行页](https://github.com/jackotom/hongguo-drama/releases)为准。
+当前正式版为 **1.7**，源码配置版本为 `1.7.0`。具体安装包、签名公证与验证记录，以[对应发行页](https://github.com/jackotom/hongguo-drama/releases)为准。
 
-1.6 发行记录包含 Apple 芯片 Mac 的正常视频播放、弹幕设置、1080P 下载，以及 Windows Server 2022 x64 云端的播放、全屏、切集、连播和清晰度设置验证。Windows 首轮切集自动检查超时，同一源码与成品重跑通过。
+1.7 两种 Mac 架构的 App 和 DMG 均已签名、公证并装订票据，安装包挂载后代码与媒体工具核验一致。下载风险提示已在隔离预览检查宽窄布局；请求身份、延迟重试、路由权限、片源恢复和正常／损坏视频识别定向检查通过。Windows 构建与云端验证详情见本版发行页。
 
 **尚未覆盖**：实体 Windows 11、全部显卡、实体 Intel Mac、启用 Gatekeeper 的干净环境、Windows 真实网络弹幕及长期播放。云端检查和公证不能代替所有设备与网络环境的实测。
 
@@ -274,6 +291,7 @@ https://github.com/user-attachments/assets/b95f4f60-b57c-495f-a30e-62ac2b0bda11
 
 | 版本 | 主要变化 | 详细记录 |
 |---|---|---|
+| 1.6 | 下载清晰度、本集弹幕、播放与下载恢复 | [发行说明](https://github.com/jackotom/hongguo-drama/releases/tag/v1.6) |
 | 1.5 | 片源兼容、播放失败恢复、全屏切集控制条优化 | [发行说明](https://github.com/jackotom/hongguo-drama/releases/tag/v1.5) |
 | 1.4 | 修复合并候选混入在线播放记录、文件删除后候选残留 | [发行说明](https://github.com/jackotom/hongguo-drama/releases/tag/v1.4) |
 | 1.3 | 主题、快捷键、隐身小窗、公开剧评、本机收藏与画质增强 | [发行说明](https://github.com/jackotom/hongguo-drama/releases/tag/v1.3) |

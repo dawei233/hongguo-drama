@@ -4,7 +4,8 @@ import { Search, Film, RefreshCw, ExternalLink } from './icons';
 import { isSubmitKey } from './episodeRange';
 import { readSearchHistory, saveSearchTerm, clearSearchHistory, rememberCatalogTitles, getSearchSuggestions } from '../searchHistory';
 
-const SOURCE_LABELS = { hongguo: '红果短剧', xifan: '西饭短剧', hema: '河马短剧' };
+import useMediaSources from './useMediaSources';
+import { mediaSourceLabel } from './mediaSourcesModel.mjs';
 
 /**
  * SearchPanel —— 按所选来源搜索短剧
@@ -12,6 +13,7 @@ const SOURCE_LABELS = { hongguo: '红果短剧', xifan: '西饭短剧', hema: '�
  */
 function SearchPanel({ onSelectSeries, onSwitchToInput, active = true }) {
   const [source, setSource] = useState('all');
+  const { sources: mediaSources, revision: sourceRevision, loading: sourcesLoading, error: sourcesError } = useMediaSources();
   const requestVersion = useRef(0);
   const pendingSearch = useRef(null);
   useEffect(() => () => { requestVersion.current++; }, []);
@@ -34,6 +36,12 @@ function SearchPanel({ onSelectSeries, onSwitchToInput, active = true }) {
       setLoading(false);
     }
   }, [active]);
+
+  useEffect(() => {
+    requestVersion.current++; pendingSearch.current = null;
+    setLoading(false); setPickingId(''); setResults(null); setError(''); setPageTitle('');
+    if (source !== 'all' && !mediaSources.some(item => item.id === source)) setSource('all');
+  }, [sourceRevision, mediaSources]);
 
   const switchSource = (next) => {
     if (next === source) return;
@@ -68,6 +76,7 @@ function SearchPanel({ onSelectSeries, onSwitchToInput, active = true }) {
   };
 
   const doSearch = async () => {
+    if (sourcesLoading) return;
     const kw = keyword.trim();
     if (!kw) {
       setError('请输入剧名关键词');
@@ -83,7 +92,7 @@ function SearchPanel({ onSelectSeries, onSwitchToInput, active = true }) {
     setResults(null);
     setPageTitle('');
     try {
-      const sources = source === 'all' ? Object.keys(SOURCE_LABELS) : [source];
+      const sources = source === 'all' ? mediaSources.map(item => item.id) : [source];
       const responses = await Promise.allSettled(sources.map(async (searchSource) => {
         const res = await window.electronAPI.searchSeries(kw, { source: searchSource });
         if (!res?.success) throw new Error(res?.error || '搜索失败，请重试');
@@ -97,7 +106,7 @@ function SearchPanel({ onSelectSeries, onSwitchToInput, active = true }) {
           merged.push(...(response.value.results || []).map(item => ({ ...item, source: searchSource })));
           if (sources.length === 1) setPageTitle(response.value.pageTitle || '');
         } else {
-          failures.push(`${SOURCE_LABELS[searchSource]}：${response.reason?.message || '搜索失败'}`);
+          failures.push(`${mediaSourceLabel(searchSource, mediaSources)}：${response.reason?.message || '搜索失败'}`);
         }
       });
       rememberCatalogTitles(merged);
@@ -153,9 +162,10 @@ function SearchPanel({ onSelectSeries, onSwitchToInput, active = true }) {
       <div className="card-header-title">
         <Search size={18} />
         <span>搜索短剧</span>
-        <label className="source-control">来源<select className="input-field" aria-label="短剧来源" value={source} onChange={(e) => switchSource(e.target.value)}><option value="all">全部来源</option>{Object.entries(SOURCE_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+        <label className="source-control">来源<select className="input-field" aria-label="短剧来源" value={source} onChange={(e) => switchSource(e.target.value)}><option value="all">全部来源</option>{mediaSources.map(({ id, label }) => <option key={id} value={id}>{label}</option>)}</select></label>
       </div>
 
+      {sourcesError && <p className="settings-hint" role="status">来源列表更新失败，暂用上次列表；可在设置重新保存来源后重试。</p>}
       <div className="input-group">
         <input
           type="text"
@@ -170,7 +180,7 @@ function SearchPanel({ onSelectSeries, onSwitchToInput, active = true }) {
           onChange={(e) => changeKeyword(e.target.value)}
           onKeyDown={(e) => isSubmitKey(e) && doSearch()}
         />
-        <button className="btn btn-primary" onClick={doSearch} disabled={loading}>
+        <button className="btn btn-primary" onClick={doSearch} disabled={loading || sourcesLoading}>
           {loading ? (
             <>
               <RefreshCw size={16} className="spin" />
@@ -194,7 +204,7 @@ function SearchPanel({ onSelectSeries, onSwitchToInput, active = true }) {
       </div>}
       {historyError && <p className="search-history-error" role="alert">{historyError}</p>}
       <p className="settings-hint" style={{ marginTop: 8 }}>
-        {source === 'all' ? '同时搜索红果、西饭和河马，结果标明来源；选择一部即可查看全部剧集。' : '按剧名查找，选择一部即可查看全部剧集。'}
+        {source === 'all' ? '同时搜索所有已启用来源，结果标明来源；选择一部即可查看全部剧集。' : '按剧名查找，选择一部即可查看全部剧集。'}
       </p>
 
       {results === null && !loading && !error && (
@@ -256,7 +266,7 @@ function SearchPanel({ onSelectSeries, onSwitchToInput, active = true }) {
                         <RefreshCw size={13} className="spin" /> 正在拉取分集…
                       </>
                     ) : (
-                      <><span className="badge">{SOURCE_LABELS[item.source]}</span>查看剧集</>
+                      <><span className="badge">{mediaSourceLabel(item.source, mediaSources)}</span>查看剧集</>
                     )}
                   </div>
                 </div>

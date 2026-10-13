@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import useDialogKeyboard from './useDialogKeyboard';
 import './Browse.css';
+import useMediaSources from './useMediaSources';
+import { mediaSourceLabel } from './mediaSourcesModel.mjs';
 import { Film, RefreshCw, ExternalLink, Download, Play, Check, X, Search } from './icons';
 import { isSubmitKey, parseEpisodeRange } from './episodeRange';
 import { rememberCatalogTitles } from '../searchHistory';
@@ -20,6 +22,7 @@ const LIST_TIMEOUT_MS = 25_000;
  */
 function Browse({ onNavigate, active = true }) {
   const [source, setSource] = useState('hongguo');
+  const { sources: mediaSources, revision: sourceRevision, loading: sourcesLoading, error: sourcesError } = useMediaSources();
   const [categories, setCategories] = useState([]);
   const [category, setCategory] = useState('real-drama');
   const [genre, setGenre] = useState('');
@@ -108,7 +111,7 @@ function Browse({ onNavigate, active = true }) {
     async (cat, gen, pg, forceRefresh = false) => {
       invalidateList();
       const request = listRequest.current;
-      const key = JSON.stringify([source, cat, gen, pg]);
+      const key = JSON.stringify([sourceRevision, source, cat, gen, pg]);
       const cached = pageCache.get(key);
       const fallbackUrl = source === 'hongguo'
         ? `https://hongguoduanju.com/${cat.startsWith('hot-') ? 'rank' : 'category'}/${encodeURIComponent(cat)}${gen ? `/${encodeURIComponent(gen)}` : ''}${pg > 1 ? `?page=${pg}` : ''}` : '';
@@ -162,7 +165,7 @@ function Browse({ onNavigate, active = true }) {
         }
       }
     },
-    [invalidateList, source]
+    [invalidateList, source, sourceRevision]
   );
 
   useEffect(() => {
@@ -172,8 +175,15 @@ function Browse({ onNavigate, active = true }) {
   useEffect(() => { if (active) loadDownloadedMap(); }, [active, loadDownloadedMap]);
 
   useEffect(() => {
-    loadList(category, genre, page);
-  }, [category, genre, page, loadList]);
+    invalidateList(); closeDetail(); pageCache.clear();
+    setGenre(''); setPage(1); setResults([]); setMeta({ total: 0, totalPages: 0, genres: [] });
+    if (!mediaSources.some(item => item.id === source)) { setSource('hongguo'); setCategory('real-drama'); }
+  }, [sourceRevision, mediaSources, invalidateList, closeDetail]);
+
+  useEffect(() => {
+    if (active && !sourcesLoading && mediaSources.some(item => item.id === source)) loadList(category, genre, page);
+    return invalidateList;
+  }, [active, category, genre, page, loadList, sourcesLoading, mediaSources, invalidateList]);
 
   const switchSource = (next) => {
     if (next === source) return;
@@ -210,7 +220,7 @@ function Browse({ onNavigate, active = true }) {
   };
 
   const gotoPage = (p) => {
-    const max = source !== 'hongguo' ? page + (meta.hasMore ? 1 : 0) : meta.totalPages || 1;
+    const max = meta.totalPages || (source !== 'hongguo' ? page + (meta.hasMore ? 1 : 0) : 1);
     const next = Math.min(Math.max(1, p), max);
     if (next === page) return;
     invalidateList();
@@ -347,9 +357,9 @@ function Browse({ onNavigate, active = true }) {
           <div><h2>发现短剧</h2><p className="page-description">挑一部喜欢的，让故事继续。</p></div>
         </div>
         <div className="browse-header-right">
-          <label className="source-control">来源<select className="input-field" aria-label="短剧来源" value={source} onChange={(e) => switchSource(e.target.value)}><option value="hongguo">红果短剧</option><option value="xifan">西饭短剧</option><option value="hema">河马短剧</option></select></label>
+          <label className="source-control">来源<select className="input-field" aria-label="短剧来源" value={source} onChange={(e) => switchSource(e.target.value)}>{mediaSources.map(({ id, label }) => <option key={id} value={id}>{label}</option>)}</select></label>
           <button className="btn btn-primary" onClick={() => onNavigate('download')}><Search size={15} />搜索短剧</button>
-          <button className="btn btn-outline" disabled={loading} onClick={() => loadList(category, genre, page, true)}><RefreshCw size={15} />刷新片单</button>
+          <button className="btn btn-outline" disabled={loading || sourcesLoading} onClick={() => loadList(category, genre, page, true)}><RefreshCw size={15} />刷新片单</button>
           {meta.total > 0 && <span className="browse-stat">共 {meta.total} 部</span>}
           {source === 'hongguo' && sourceUrl && <button className="btn btn-outline" onClick={showBrowser}>
             <ExternalLink size={15} />
@@ -377,6 +387,8 @@ function Browse({ onNavigate, active = true }) {
       </div>;
       })}
 
+      {sourcesError && <p className="browse-source-note" role="status">来源列表更新失败，暂用上次列表。可在设置重新保存来源后重试。</p>}
+      {source.startsWith('custom:') && <p className="browse-source-note">来自 {mediaSourceLabel(source, mediaSources)} 的接口目录，按来源顺序显示，不代表热播榜。</p>}
       {source === 'xifan' && <p className="browse-source-note">当前提供题材分类，西饭热播榜暂未接入。</p>}
 
       {/* 题材 chips */}
@@ -517,7 +529,7 @@ function Browse({ onNavigate, active = true }) {
                     {detail.cover && <img src={detail.cover} alt="" className="browse-drawer-cover" />}
                     <div className="browse-drawer-meta">
                       <div className="browse-drawer-count">
-                        {String(detail.series_id).startsWith('hema:') ? '河马短剧' : String(detail.series_id).startsWith('xifan:') ? '西饭短剧' : '红果短剧'} · 共 {detail.total} 集 · 已下载 <b>{detail.completedCount}</b> 集
+                        {mediaSourceLabel(detail.series_id, mediaSources)} · 共 {detail.total} 集 · 已下载 <b>{detail.completedCount}</b> 集
                       </div>
                       {detail.web_accessible_episodes != null && detail.web_accessible_episodes < detail.total && (
                         <div className="browse-drawer-sub">网页源提供前 {detail.web_accessible_episodes} 集，后续集数自动尝试 App 片源。</div>

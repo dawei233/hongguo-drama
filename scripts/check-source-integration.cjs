@@ -3,7 +3,7 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),os=require('nod
 const {EventEmitter}=require('node:events'),{createRequire}=require('node:module');
 const file=path.resolve(__dirname,'../main.js'),req=createRequire(file),root=fs.mkdtempSync(path.join(os.tmpdir(),'hongguo-source-'));
 const app=new EventEmitter(),handlers={};
-Object.assign(app,{getVersion:()=> 'test',getPath:()=>root,commandLine:{appendSwitch(){}},whenReady:()=>({then(){}})});
+Object.assign(app,{getVersion:()=> 'test',getPath:()=>root,commandLine:{appendSwitch(){}},requestSingleInstanceLock: () => true, whenReady:()=>({then(){}})});
 let permissionCalls=0;
 const native={fetchEpisodeList:async sid=>({series_id:sid,episodes:[{vid:sid+':2',vid_index:2,locked:true}]}),fetchPlayUrlSingle:async()=>{permissionCalls++;return {url:null,locked:true,error:'该集已锁定'};}};
 const hema={search:async()=>({success:true,results:[{series_id:'hema:1'}]})};

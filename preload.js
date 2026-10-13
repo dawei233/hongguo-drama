@@ -37,7 +37,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   dismissedCount: () => ipcRenderer.invoke('dismissed-count'),
   rescanDownloads: () => ipcRenderer.invoke('rescan-downloads'),
 
-  // 在线播放（内存缓存 + 自定义流协议，不落盘）
+  // 在线播放（内存或临时磁盘缓存 + 自定义流协议）
   prepareOnlinePlay: (payload) => ipcRenderer.invoke('prepare-online-play', payload),
   releaseOnlinePlay: (payload) => ipcRenderer.invoke('release-online-play', payload),
   onlineCacheStatus: () => ipcRenderer.invoke('online-cache-status'),
@@ -61,6 +61,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   // 浏览（分类页）
+  getCustomSources: () => ipcRenderer.invoke('get-custom-sources'),
+  saveCustomSource: draft => ipcRenderer.invoke('save-custom-source',draft),
+  deleteCustomSource: id => ipcRenderer.invoke('delete-custom-source',id),
+  testCustomSource: draft => ipcRenderer.invoke('test-custom-source',draft),
+  getMediaSources: () => ipcRenderer.invoke('get-media-sources'),
   browseCategories: () => ipcRenderer.invoke('browse-categories'),
   browseList: (options) => ipcRenderer.invoke('browse-list', options),
   playSeries: (payload) => ipcRenderer.invoke('play-series', payload),

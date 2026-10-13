@@ -6,7 +6,7 @@ const { createRequire } = require('node:module');
 const { EventEmitter } = require('node:events');
 const file = path.resolve(__dirname, '../main.js'), req = createRequire(file);
 const app = new EventEmitter();
-Object.assign(app, { getVersion: () => '1.2.0', getPath: () => '/synthetic', commandLine: { appendSwitch() {} }, whenReady: () => ({ then() {} }) });
+Object.assign(app, { getVersion: () => '1.2.0', getPath: () => '/synthetic', commandLine: { appendSwitch() {} }, requestSingleInstanceLock: () => true, whenReady: () => ({ then() {} }) });
 let settings = {}, response, requests = 0, requestOptions;
 const handlers = {}, opened = [], events = [], sender = {};
 const store = { setErrorHandler() {}, getSettings: () => settings, saveSettings: v => { settings = v; } };

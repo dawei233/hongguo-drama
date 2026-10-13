@@ -11,7 +11,7 @@ const videoEnhancementStub = {
 const shortcutSource = transformSync(fs.readFileSync(path.join(__dirname, '../src/shortcuts.js'), 'utf8'), { loader: 'js', format: 'cjs' }).code;
 const source = transformSync(fs.readFileSync(path.join(__dirname, '../src/components/Player.jsx'), 'utf8'), { loader: 'jsx', format: 'cjs' }).code;
 
-function mount({ local = false, saved = null, transcode, prepare, props = {}, episodeCount = 2, storage = new Map(), seriesId = 'A', settings = {}, lockedIndexes = [] } = {}) {
+function mount({ local = false, saved = null, transcode, prepare, props = {}, episodeCount = 2, storage = new Map(), seriesId = 'A', settings = {}, lockedIndexes = [], apiOverrides = {} } = {}) {
   props = { setEpisodesOpen() {}, ...props };
   const slots = [], effects = [], cleanups = [], saves = [], prepares = [], transcodes = [], cancelled = [];
   const releases = [], settingsSaved = [];
@@ -59,6 +59,7 @@ function mount({ local = false, saved = null, transcode, prepare, props = {}, ep
     compatCacheStatus: async () => ({ success: true, files: 1, bytes: 10 }),
     clearCompatCache: async () => ({ success: true, count: 1 }),
     clearOnlineCache: async () => ({ success: true }),
+    ...apiOverrides,
   };
   const window = { localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) }, electronAPI: new Proxy(api, { get: (o, k) => o[k] || (k.startsWith('on') ? () => () => {} : async () => ({})) }),
     addEventListener: (k, f, options) => { events.set(k, f); listenerOptions.set(k, options); },
@@ -193,8 +194,11 @@ if (require.main === module) (async () => {
   });
   await test('failed automatic transcode does not loop on repeated decode events', async () => {
     const ui = mount({ local: true, transcode: async () => ({ success: false, error: 'mock failure' }) }); await ui.flush(); ui.metadata();
-    ui.error(4); await ui.flush(); ui.error(4); await ui.flush();
-    ui.error(4); await ui.flush();
+    ui.error(3); await ui.flush(); ui.error(3); await ui.flush();
+    ui.error(3); await ui.flush();
+    assert.equal(ui.transcodes[0].filePath, '/mock-1.mp4');
+    assert.equal(ui.transcodes[1].filePath, null, 'decode failure after reconnect must convert the online source');
+    assert.equal(ui.prepares.length, 1, 'failed conversion must not restart online recovery indefinitely');
     assert.equal(ui.transcodes.length, 2, 'one original and one refreshed-source conversion, then stop'); assert.ok(ui.button('转码后播放')); ui.unmount();
     let resolve;
     const pending = mount({ local: true, transcode: () => new Promise(r => { resolve = r; }) });
@@ -212,6 +216,18 @@ if (require.main === module) (async () => {
     await ui.button('重新连接片源').props.onClick(); await ui.flush(); ui.metadata();
     ui.error(3); await ui.flush(); await ui.button('转码后播放').props.onClick(); await ui.flush();
     assert.equal(ui.transcodes[1].filePath, null, 'online recovery must use its online source');
+    ui.unmount();
+  });
+  await test('failed local conversion followed by unavailable online source does not invent a decode failure', async () => {
+    const ui = mount({ local: true, transcode: async () => ({ success: false, error: 'mock failure' }) });
+    await ui.flush(); ui.metadata(); ui.error(4); await ui.flush();
+    assert.equal(ui.transcodes.length, 1, 'local unsupported media gets one conversion attempt');
+    assert.equal(ui.prepares.length, 1, 'failed local conversion reconnects online once');
+    assert.equal(ui.prepares[0].force, true);
+    ui.error(4); await ui.flush(); ui.error(4); await ui.flush();
+    assert.equal(ui.transcodes.length, 1, 'online unsupported-source may mean unavailable HTTP, not codec failure');
+    assert.equal(ui.prepares.length, 1, 'persistent unavailable source must not loop reconnects');
+    assert.ok(ui.button('重新连接片源')); assert.ok(ui.button('转码后播放'), 'explicit recovery remains available');
     ui.unmount();
   });
   await test('network failure refreshes the same episode once and retains position', async () => {

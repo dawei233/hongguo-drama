@@ -18,7 +18,7 @@ const originals = files.map(file => { const stat = fs.statSync(file); return [st
 const rows = [];
 async function checkMerge(label, source, media, compatible, mode = '') {
   const handlers = {}, app = new EventEmitter();
-  Object.assign(app, { getVersion: () => 'test', getPath: () => root, commandLine: { appendSwitch() {} }, whenReady: () => ({ then() {} }) });
+  Object.assign(app, { getVersion: () => 'test', getPath: () => root, commandLine: { appendSwitch() {} }, requestSingleInstanceLock: () => true, whenReady: () => ({ then() {} }) });
   let saved = [], settled;
   const finished = new Promise(resolve => { settled = resolve; });
   const electron = { app, ipcMain: { handle: (name, fn) => handlers[name] = fn }, protocol: { registerSchemesAsPrivileged() {} } };

@@ -23,7 +23,7 @@ function load(platform = 'darwin') {
   Object.assign(app, {
     getVersion: () => 'test', getPath: () => root,
     commandLine: { appendSwitch() {} },
-    whenReady: () => ({ then(fn) { ready = fn; } }),
+    requestSingleInstanceLock: () => true, whenReady: () => ({ then(fn) { ready = fn; } }),
     quit() {},
   });
   const windows = [];
