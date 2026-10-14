@@ -41,6 +41,8 @@ export default function App() {
   const [storageError, setStorageError] = useState('');
   const [appInfo, setAppInfo] = useState(null); // { version, brand, appName }
   const [playerMounted, setPlayerMounted] = useState(false);
+  // 竖屏真全屏状态（原生窗口全屏）。见 main.js 的 set-window-fullscreen 注释。
+  const [playerFullscreen, setPlayerFullscreen] = useState(false);
   const [playerTarget, setPlayerTarget] = useState(null); // 浏览页点播 -> 播放页选中
   const rememberPlayerSeries = useCallback((seriesId) => {
     // 保留命令时间戳避免重复初始化；重新挂载时只按当前系列的最新断点恢复。
@@ -71,7 +73,32 @@ export default function App() {
     });
   }, []);
 
+  // 退出原生全屏的统一出口。切页、切布局、进隐身小窗都必须走它，
+  // 否则任一分支漏掉都会把用户留在"没有侧边栏的全屏界面"里出不来。
+  const exitPlayerFullscreen = useCallback(async () => {
+    if (!playerFullscreen) return;
+    try {
+      const result = await window.electronAPI?.setWindowFullscreen?.(false);
+      setPlayerFullscreen(result?.success ? result.fullscreen === true : false);
+    } catch { setPlayerFullscreen(false); }
+  }, [playerFullscreen]);
+
+  // 系统级全屏变化（F11 / 窗口菜单）也要同步，否则界面与实际不符
+  useEffect(() => window.electronAPI?.onWindowFullscreenChanged?.((value) => {
+    setPlayerFullscreen(value === true);
+  }), []);
+
+  // 挂载时对齐一次真实状态：重载渲染进程或窗口已是全屏时，界面要跟上
+  useEffect(() => {
+    window.electronAPI?.getWindowFullscreen?.().then((value) => setPlayerFullscreen(value === true));
+  }, []);
+
+  // 隐身小窗是另一套窗口形态（无边框、跟随鼠标暂停），与全屏互斥
+  useEffect(() => { if (stealthMode) exitPlayerFullscreen(); }, [stealthMode, exitPlayerFullscreen]);
+
   const navigate = (nextPage) => {
+    // 离开播放页必须退出全屏，否则用户会卡在全屏界面里（没有侧边栏可点）
+    if (nextPage !== 'player') exitPlayerFullscreen();
     if (nextPage === 'player' || nextPage === 'feed') setPlayerMounted(nextPage === 'player');
     setVisited((pages) => pages.includes(nextPage) ? pages : [...pages, nextPage]);
     setPage(nextPage);
@@ -82,7 +109,7 @@ export default function App() {
       case 'browse':
         return <Browse active={page === id} onNavigate={navigate} />;
       case 'player':
-        return playerMounted ? <Player portrait={layout === 'portrait'} episodesOpen={episodesOpen} setEpisodesOpen={setEpisodesOpen} actionsHidden={actionsHidden || (borderless && layout === 'portrait')} active={page === id} target={playerTarget} onSeriesSelected={rememberPlayerSeries} onNavigate={navigate} /> : null;
+        return playerMounted ? <Player nativeFullscreen={playerFullscreen} portrait={layout === 'portrait'} episodesOpen={episodesOpen} setEpisodesOpen={setEpisodesOpen} actionsHidden={actionsHidden || (borderless && layout === 'portrait')} active={page === id} target={playerTarget} onSeriesSelected={rememberPlayerSeries} onNavigate={navigate} /> : null;
       case 'feed':
         return page === 'feed' ? <DramaFeed onNavigate={navigate} /> : null;
       case 'calendar':
@@ -112,6 +139,9 @@ export default function App() {
     setLayoutBusy(true);
     try {
       if (document.fullscreenElement) await document.exitFullscreen();
+      // 竖屏原生全屏也要先退出：否则切到横屏后会带着 .player-fullscreen 类，
+      // 而横屏走的是 DOM 全屏，两者状态不一致，界面会停在"外壳被隐藏"的样子。
+      await exitPlayerFullscreen();
       const mode = layout === 'portrait' ? 'landscape' : 'portrait';
       const result = await window.electronAPI.setWindowLayout(mode);
       if (!result.success) throw new Error(result.error);
@@ -128,7 +158,7 @@ export default function App() {
   const currentPage = MENU.find((item) => item.id === page);
 
   return (
-    <div className={`app-layout ${stealthMode ? 'stealth-mode' : ''} ${isMac ? 'platform-mac' : ''} layout-${layout} ${page === 'player' ? 'player-focused' : ''} ${borderless && page === 'player' && layout === 'portrait' ? 'player-borderless' : ''}`}>
+    <div className={`app-layout ${stealthMode ? 'stealth-mode' : ''} ${isMac ? 'platform-mac' : ''} layout-${layout} ${page === 'player' ? 'player-focused' : ''} ${borderless && page === 'player' && layout === 'portrait' ? 'player-borderless' : ''} ${playerFullscreen ? 'player-fullscreen' : ''}`}>
       <aside className="sidebar" aria-label="主导航">
         <div className="sidebar-window-drag" aria-hidden="true" />
         <div className="sidebar-brand">

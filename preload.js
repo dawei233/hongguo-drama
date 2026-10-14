@@ -124,6 +124,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   selectFolder: () => ipcRenderer.invoke('select-folder'),
   getWindowLayout: () => ipcRenderer.invoke('get-window-layout'),
   setWindowLayout: (mode) => ipcRenderer.invoke('set-window-layout', mode),
+  // 竖屏真全屏（Electron 原生窗口全屏）。横屏仍走 DOM 全屏，故两者并存。
+  getWindowFullscreen: () => ipcRenderer.invoke('get-window-fullscreen'),
+  setWindowFullscreen: (enabled) => ipcRenderer.invoke('set-window-fullscreen', enabled),
+  onWindowFullscreenChanged: (cb) => {
+    const listener = (_event, fullscreen) => cb(fullscreen);
+    ipcRenderer.on('window-fullscreen-changed', listener);
+    return () => ipcRenderer.removeListener('window-fullscreen-changed', listener);
+  },
   getAlwaysOnTop: () => ipcRenderer.invoke('get-always-on-top'),
   setAlwaysOnTop: (value) => ipcRenderer.invoke('set-always-on-top', value),
   setEpisodePanelOpen: (value) => ipcRenderer.invoke('set-episode-panel-open', value),

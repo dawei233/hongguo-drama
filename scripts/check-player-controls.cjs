@@ -38,9 +38,8 @@ const source = transformSync(fs.readFileSync(path.join(__dirname, '../src/compon
   const document = { fullscreenElement: null, addEventListener: (name, fn) => documentListeners.set(name, fn), removeEventListener: name => documentListeners.delete(name), exitFullscreen: async () => { document.fullscreenElement = null; documentListeners.get('fullscreenchange')?.(); } };
   const stage = { addEventListener: (name, fn) => stageListeners.set(name, fn), removeEventListener: name => stageListeners.delete(name), requestFullscreen: async () => { fullscreenCalls++; document.fullscreenElement = stage; documentListeners.get('fullscreenchange')?.(); } };
   const props = { videoRef: { current: media }, stageRef: { current: stage }, source: 'one', available: true, rate: 1, onRateChange: rate => { selectedRate = rate; } };
-  props.onWindowFill = value => { props.windowFill = value; };
   props.onToggleFullscreen = async () => {
-    if (props.portrait) props.onWindowFill(!props.windowFill);
+    if (props.portrait) fullscreenCalls++;   // 竖屏现在也走原生全屏，不再切 windowFill
     else if (document.fullscreenElement === stage) await document.exitFullscreen();
     else await stage.requestFullscreen();
   };
@@ -231,8 +230,9 @@ const source = transformSync(fs.readFileSync(path.join(__dirname, '../src/compon
   keyboardFocus = true; stageListeners.get('focusin')({ target: find('暂停') }); advance(); render(); assert.ok(!hidden(), 'normal landscape keyboard focus stays visible');
   keyboardFocus = false; stageListeners.get('focusout')(); advance(); render(); assert.ok(hidden());
   props.portrait = true; render(); advance(); render(); assert.ok(hidden(), 'portrait retains auto-hide');
-  props.windowFill = true; props.onWindowFill = value => { props.windowFill = value; }; render();
-  movePointer(); assert.ok(!hidden()); advance(); render(); assert.ok(hidden(), 'window fill auto-hides');
+  // 竖屏全屏现在是原生窗口全屏（由 App 传 nativeFullscreen 下来），不再是 windowFill
+  props.nativeFullscreen = true; render();
+  movePointer(); assert.ok(!hidden()); advance(); render(); assert.ok(hidden(), 'portrait fullscreen auto-hides');
   props.continuing = true; props.available = false; media.pause(); render();
   assert.ok(hidden(), 'window fill keeps controls hidden while auto-next prepares');
   props.continuing = false; props.autoContinue = true; media.ended = true; listeners.get('ended')?.(); render();

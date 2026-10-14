@@ -661,7 +661,6 @@
 .layout-portrait .player-episode-panel { display: block; }
 .layout-portrait .player-episode-panel .player-tips { display: none; }
 .layout-portrait .player-now-sub, .layout-portrait .player-now-status { display: none; }
-.layout-portrait .player-stage.player-window-fill { position: fixed; inset: 48px 0 0; width: 100%; height: calc(100% - 48px); z-index: 15; border-radius: 0; }
 
 /* Width mode follows the available width; only the stage clips the picture. */
 .player-stage[data-picture-mode] .player-video { object-fit: contain; }
@@ -678,3 +677,40 @@
 .player-download-quality { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); }
 .player-download-quality .input-field { width: auto; max-width: 100%; min-height: 31px; padding: 5px 8px; font-size: 12px; }
 .player-download-quality-hint { flex-basis: 100%; margin: 2px 0 0; color: var(--text-secondary); font-size: 12px; line-height: 1.6; }
+
+/* ── 竖屏真全屏 ─────────────────────────────────────────────────────────────
+   竖屏的「全屏」以前只是给播放器加一个 CSS 类填满窗口（.player-window-fill，且是
+   `inset: 48px 0 0`，刻意留出工具栏），窗口根本没有真的进全屏。现在改为 Electron
+   原生窗口全屏，由根容器上的 .player-fullscreen 驱动"只留播放器"的布局 ——
+   这是 DOM 全屏会自动做、而原生全屏不会做的事。
+
+   两点必须注意（都踩过坑）：
+   1) .player-container 带 `max-width:1000px; margin:0 auto`。不覆盖它就会出现
+      "全屏了但内容仍被限宽居中、两侧留黑、控制条只占中段"。
+   2) z-index 取 500 而不是极大值：必须低于提示条（.dm-toast 是 999，见
+      DownloadManager.css），否则全屏时的操作反馈（如"播放速度 1.5×"）会被整个盖住。
+
+   全部规则限定在 .layout-portrait.player-fullscreen：横屏仍走 DOM 全屏，不受影响。 */
+.layout-portrait.player-fullscreen .sidebar,
+.layout-portrait.player-fullscreen .window-toolbar,
+.layout-portrait.player-fullscreen .compact-navigation,
+.layout-portrait.player-fullscreen .stealth-toolbar { display: none !important; }
+.layout-portrait.player-fullscreen .main-wrapper { min-width: 0; }
+.layout-portrait.player-fullscreen .main-content[data-page="player"] { padding: 0; overflow: hidden; }
+.layout-portrait.player-fullscreen .player-container {
+  position: fixed; inset: 0; z-index: 500;
+  max-width: none; margin: 0; padding: 0;
+  display: flex; flex-direction: column;
+  width: 100%; height: 100%; min-height: 0;
+  background: #000; overflow: hidden;
+}
+.layout-portrait.player-fullscreen .player-container > :not(.player-viewing-layout):not(.player-empty) { display: none !important; }
+.layout-portrait.player-fullscreen .player-viewing-layout { display: flex; flex: 1; min-height: 0; width: 100%; height: 100%; }
+.layout-portrait.player-fullscreen .player-viewing-layout > :not(.player-stage) { display: none !important; }
+.layout-portrait.player-fullscreen .player-stage {
+  position: relative; inset: auto; flex: 1;
+  width: 100%; height: 100%; min-height: 0;
+  max-height: none; margin: 0; border-radius: 0;
+  aspect-ratio: auto; background: #000; overflow: hidden;
+}
+.layout-portrait.player-fullscreen .player-video { width: 100%; height: 100%; object-fit: contain; }

@@ -25,7 +25,7 @@ const readStoredVolume = () => {
   } catch { return null; }
 };
 
-export default function PlayerControls({ danmaku, danmakuSource = 'comments', onDanmakuSourceChange, enhancement, shortcuts = DEFAULT_SHORTCUTS, onToggleFullscreen, videoRef, stageRef, source, available, continuing = false, autoContinue = false, rate, onRateChange, onError, pictureMode = 'fit', onPictureModeChange, portrait = false, windowFill = false, onWindowFill }) {
+export default function PlayerControls({ danmaku, danmakuSource = 'comments', onDanmakuSourceChange, enhancement, shortcuts = DEFAULT_SHORTCUTS, onToggleFullscreen, videoRef, stageRef, source, available, continuing = false, autoContinue = false, rate, onRateChange, onError, pictureMode = 'fit', onPictureModeChange, portrait = false, nativeFullscreen = false }) {
   const [media, setMedia] = useState({ paused: true, ended: false, time: 0, duration: 0, muted: false, volume: 1 });
   const [fullscreen, setFullscreen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -41,7 +41,7 @@ export default function PlayerControls({ danmaku, danmakuSource = 'comments', on
   const speedRef = useRef(null);
   const episodeKeysRef = useRef(new Set());
   const pointerRef = useRef(null);
-  const expanded = fullscreen || windowFill;
+  const expanded = fullscreen || nativeFullscreen;
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -55,14 +55,21 @@ export default function PlayerControls({ danmaku, danmakuSource = 'comments', on
     if (stageRef.current) observer?.observe(stageRef.current);
     window.addEventListener('resize', measure);
     return () => { observer?.disconnect(); window.removeEventListener('resize', measure); };
-  }, [menuOpen, fullscreen, windowFill, stageRef]);
+  }, [menuOpen, fullscreen, nativeFullscreen, stageRef]);
 
+  // 原生窗口全屏不像 DOM 全屏那样自带 Esc 退出，必须自己接。
+  // 挂在 window 的冒泡阶段，优先级低于菜单那套（菜单在 document 上处理并
+  // stopPropagation），所以"菜单打开时 Esc 先关菜单、不退出全屏"成立。
   useEffect(() => {
-    if (!windowFill) return;
-    const escape = event => { if (event.key === 'Escape' && !event.defaultPrevented && !event.target.closest?.('.danmaku-settings')) onWindowFill(false); };
+    if (!nativeFullscreen) return;
+    const escape = event => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      if (event.target?.closest?.('.danmaku-settings')) return;
+      window.electronAPI?.setWindowFullscreen?.(false);
+    };
     window.addEventListener('keydown', escape);
     return () => window.removeEventListener('keydown', escape);
-  }, [windowFill, onWindowFill]);
+  }, [nativeFullscreen]);
 
   useEffect(() => {
     const stage = stageRef.current;
@@ -260,7 +267,7 @@ export default function PlayerControls({ danmaku, danmakuSource = 'comments', on
           </button>
           <input type="range" aria-label="音量" aria-valuetext={`${Math.round((media.muted ? 0 : media.volume) * 100)}%`} min="0" max="1" step="0.05" value={media.muted ? 0 : media.volume} onChange={changeVolume} />
         </div>
-        <button type="button" data-player-control aria-label={expanded ? '退出全屏' : '全屏'} title={`${expanded ? '退出全屏' : portrait ? '填满当前窗口' : '全屏'}（${formatShortcut(shortcuts.fullscreen)}）`} onClick={onToggleFullscreen}>
+        <button type="button" data-player-control aria-label={expanded ? '退出全屏' : '全屏'} title={`${expanded ? '退出全屏' : '全屏'}（${formatShortcut(shortcuts.fullscreen)}）`} onClick={onToggleFullscreen}>
           <Icon><path d={expanded ? 'M9 3v6H3m12-6v6h6M9 21v-6H3m12 6v-6h6' : 'M9 3H3v6m12-6h6v6M3 15v6h6m12-6v6h-6'} /></Icon>
         </button>
         <button type="button" data-player-control className="player-controls-rate" aria-label="增加播放速度" title={`播放速度 ${rate}×，点击增加 0.25 倍，4 倍后回到 1 倍`} onClick={() => onRateChange(rate >= 4 ? 1 : Math.min(4, rate + 0.25))}>{rate}×</button>

@@ -3487,6 +3487,55 @@ let windowLayout = 'landscape';
 let landscapeBounds = null;
 let layoutChanging = false;
 const stealth = createStealthController({ screen, getWindow: () => mainWindow });
+
+// ── 竖屏真全屏 ─────────────────────────────────────────────────────────────
+// 背景：改之前竖屏的「全屏」只是前端 setWindowFill —— 给播放器加个 CSS 类填满窗口，
+// 窗口本身并没有进全屏（`.player-window-fill` 是 `inset: 48px 0 0`，还刻意留出工具栏）。
+// 所以竖屏下从来就没有"真全屏"，横屏走 DOM 全屏、竖屏走 CSS 填充，两者行为不一致。
+// 现在竖屏改为 Electron 原生窗口全屏，与横屏的"整屏只留播放器"观感一致。
+//
+// 为什么不用 DOM 全屏：DOM 全屏在 Electron 内部最终也是调 owner_window_->SetFullScreen()
+// （见 docs/research/electron-fullscreen-multimonitor.md §1），但它会引入 :fullscreen
+// 伪类与 fullscreenchange 事件这套额外语义；竖屏这里已经有自己的布局类，直接用原生更直白。
+ipcMain.handle('get-window-fullscreen', () => Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isFullScreen()));
+ipcMain.handle('set-window-fullscreen', async (event, enabled) => {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) {
+    return { success: false, error: '窗口不可用' };
+  }
+  // 与 set-window-layout 保持一致：隐身小窗期间拒绝切换全屏。
+  // 小窗会 setFullScreenable(false)，此时 Electron 的 SetFullScreen 是**静默 no-op**，
+  // 不先拦住就会一直等到超时、给用户报"切换超时"，把真实原因掩盖掉。
+  if (stealth.enabled) return { success: false, error: '请先退出隐身小窗再切换全屏' };
+  const win = mainWindow;
+  const want = enabled === true;
+  if (win.isFullScreen() === want) return { success: true, fullscreen: want };
+  try {
+    await new Promise((resolve, reject) => {
+      const name = want ? 'enter-full-screen' : 'leave-full-screen';
+      const done = () => { clearTimeout(timer); resolve(); };
+      const timer = setTimeout(() => { win.removeListener(name, done); reject(new Error('全屏切换超时')); }, 3000);
+      win.once(name, done);
+      win.setFullScreen(want);
+    });
+    // 进入全屏后主动确保窗口在前台：多显示器下窗口失焦时鼠标事件的表现会变差。
+    if (want) win.focus();
+    // 广播**切换完成后读到的真实值**。不要依赖 enter-full-screen 回调里的 isFullScreen()——
+    // Electron 触发该事件的瞬间该值可能尚未更新，会广播出 false（曾因此让渲染层状态失同步）。
+    const actual = win.isFullScreen();
+    sendToRenderer('window-fullscreen-changed', actual);
+    return { success: true, fullscreen: actual };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+// 系统级全屏变化（F11 / 窗口菜单 / Esc）同步给渲染层。延后一拍再读，避开事件瞬间的中间态。
+function onFullScreenChange() {
+  setTimeout(() => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    sendToRenderer('window-fullscreen-changed', mainWindow.isFullScreen());
+  }, 0);
+}
+
 ipcMain.handle('set-stealth-mode', async (event, enabled) => {
   if (!mainWindow || event.sender !== mainWindow.webContents || typeof enabled !== 'boolean') return { success: false, error: '无法切换小窗' };
   if (enabled && (mainWindow.isFullScreen() || layoutChanging)) return { success: false, error: '请先退出全屏，再开启隐身小窗' };
@@ -3557,6 +3606,9 @@ function createWindow() {
 
   mainWindow.setMenuBarVisibility(false);
   episodePanel.attach(mainWindow);
+  // 系统级全屏变化（F11、窗口菜单、Esc）也要同步给渲染层，否则界面状态与实际不符
+  mainWindow.on('enter-full-screen', onFullScreenChange);
+  mainWindow.on('leave-full-screen', onFullScreenChange);
   mainWindow.webContents.once('did-finish-load', () => {
     if (storageError) sendToRenderer('storage-error', storageError);
   });

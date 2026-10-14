@@ -14,7 +14,8 @@ const { mount } = require('./check-player-resume.cjs');
   assert.equal(video().props.src, original.src);
   assert.equal(video().props.key, original.key);
   assert.equal(video().props.ref, original.ref);
-  controls().props.onWindowFill(true); ui.render();
+  // 竖屏全屏现在是原生窗口全屏（nativeFullscreen 属性），不再是 onWindowFill 回调
+  ui.props.nativeFullscreen = true; ui.render();
   assert.equal(controls().props.pictureMode, 'width');
   assert.equal(ui.media.currentTime, 37);
   ui.episode(2); await ui.flush(); ui.metadata();
@@ -31,5 +32,5 @@ const { mount } = require('./check-player-resume.cjs');
   broken.find(n => n.props.onPictureModeChange).props.onPictureModeChange('width'); broken.render();
   assert.equal(broken.find(n => n.props.onPictureModeChange).props.pictureMode, 'width');
   assert.ok(broken.find(n => n.children?.some(c => typeof c === 'string' && c.includes('未能保存')))); broken.unmount();
-  console.log('PASS picture-mode default, persistence, progress/node, episode and window-fill continuity');
+  console.log('PASS picture-mode default, persistence, progress/node, episode and portrait-fullscreen continuity');
 })().catch(error => { console.error(error); process.exitCode = 1; });

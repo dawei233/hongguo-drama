@@ -20,14 +20,12 @@ const localMediaKey = (seriesId, episode) => JSON.stringify([seriesId, episode?.
  *  - 「边下边看」：下一集若还在下载，显示等待态并轮询，下完自动接上
  *  - 断点续播：按 series_id 记住看到第几集、第几秒
  */
-function Player({ target, onNavigate, onSeriesSelected, active = true, portrait = false, actionsHidden = false, episodesOpen = false, setEpisodesOpen }) {
+function Player({ target, onNavigate, onSeriesSelected, nativeFullscreen = false, active = true, portrait = false, actionsHidden = false, episodesOpen = false, setEpisodesOpen }) {
   const enhancement = useVideoEnhancement();
   const [shortcuts, setShortcuts] = useState(readShortcuts);
   const [showDanmakuControls, setShowDanmakuControls] = useState(false);
   useEffect(() => subscribeShortcuts(setShortcuts), []);
   const [portraitActionsOpen, setPortraitActionsOpen] = useState(false);
-  const [windowFill, setWindowFill] = useState(false);
-  useEffect(() => { if (!portrait || !active) setWindowFill(false); }, [portrait, active]);
   const [seriesList, setSeriesList] = useState([]);
   const [activeSeriesId, setActiveSeriesId] = useState('');
   const [pictureChoice, setPictureChoice] = useState(null);
@@ -813,11 +811,17 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
   const toggleFullscreen = useCallback(async () => {
     if (document.querySelector('.stealth-mode')) { showToast('请先退出隐身小窗'); return; }
     try {
-      if (portrait) { setWindowFill(fill => !fill); return; }
+      if (portrait) {
+        // 竖屏改用 Electron 原生窗口全屏（以前只是加个 CSS 类填满窗口，窗口并没有真进全屏）。
+        // 状态由 App 持有；这里只发指令，结果经 window-fullscreen-changed 广播回来。
+        const result = await window.electronAPI?.setWindowFullscreen?.(!nativeFullscreen);
+        if (!result?.success) throw new Error(result?.error || '全屏切换失败');
+        return;
+      }
       if (document.fullscreenElement === stageRef.current) await document.exitFullscreen();
       else await stageRef.current?.requestFullscreen();
     } catch { showToast('无法进入或退出全屏，请重试'); }
-  }, [portrait, showToast]);
+  }, [portrait, nativeFullscreen, showToast]);
 
   // Capture handled keys before media controls; cancel keyup too so focused buttons cannot toggle twice.
   useEffect(() => {
@@ -1351,7 +1355,7 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
 
       <div className="player-viewing-layout">
       {/* 播放区 */}
-      <div className={`player-stage ${windowFill ? 'player-window-fill' : ''}`} data-picture-mode={pictureMode} ref={stageRef}>
+      <div className="player-stage" data-picture-mode={pictureMode} ref={stageRef}>
           <video
             ref={videoRef}
             crossOrigin="anonymous"
@@ -1415,7 +1419,7 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
         {danmakuSource === 'official'
           ? <OfficialDanmaku videoRef={videoRef} source={videoSrc} available={canPlay && active} danmaku={danmaku} />
           : <CommentDanmaku videoRef={videoRef} source={videoSrc} available={canPlay && active} danmaku={danmaku} />}
-        <PlayerControls danmaku={showDanmakuControls ? danmaku : null} danmakuSource={danmakuSource} onDanmakuSourceChange={writeDanmakuSource} enhancement={enhancement} continuing={autoAdvancing && !playbackError && !decodeFailed} autoContinue={autoNext && !!findNext(currentIndex)} shortcuts={shortcuts} onToggleFullscreen={toggleFullscreen} portrait={portrait} windowFill={windowFill} onWindowFill={setWindowFill} videoRef={videoRef} stageRef={stageRef} source={videoSrc} available={canPlay}
+        <PlayerControls danmaku={showDanmakuControls ? danmaku : null} danmakuSource={danmakuSource} onDanmakuSourceChange={writeDanmakuSource} enhancement={enhancement} continuing={autoAdvancing && !playbackError && !decodeFailed} autoContinue={autoNext && !!findNext(currentIndex)} shortcuts={shortcuts} onToggleFullscreen={toggleFullscreen} portrait={portrait} nativeFullscreen={nativeFullscreen} videoRef={videoRef} stageRef={stageRef} source={videoSrc} available={canPlay}
           pictureMode={pictureMode} onPictureModeChange={changePictureMode} rate={playbackRate} onRateChange={changePlaybackRate} onError={showToast} />
         {!canPlay && (
           <div className="player-placeholder" style={{ position: 'absolute', inset: 0 }}>
