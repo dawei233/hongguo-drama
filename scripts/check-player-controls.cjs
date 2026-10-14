@@ -52,7 +52,10 @@ const source = transformSync(fs.readFileSync(path.join(__dirname, '../src/compon
     setWindowFullscreen: async value => { nativeFullscreen = value === true; fullscreenCalls++; fullscreenListeners.forEach(fn => fn(nativeFullscreen)); return { success: true, fullscreen: nativeFullscreen }; },
     onWindowFullscreenChanged: fn => { fullscreenListeners.add(fn); return () => fullscreenListeners.delete(fn); },
   };
-  const context = { module: { exports: {} }, document, window: { electronAPI, addEventListener: (name, fn) => windowListeners.set(name, fn), removeEventListener: name => windowListeners.delete(name) }, setTimeout: (fn, delay) => { timers.set(++nextTimer, { fn, at: now + delay }); return nextTimer; }, clearTimeout: id => timers.delete(id), require: name => name === 'react' ? react : name === '../shortcuts' ? shortcutModule.exports : name === './VideoEnhancement' ? videoEnhancementStub : {} };
+  // 音量持久化会读写 localStorage，夹具需要一个最小实现（真实浏览器里始终存在）
+  const storage = new Map();
+  const localStorage = { getItem: k => (storage.has(k) ? storage.get(k) : null), setItem: (k, v) => storage.set(k, String(v)), removeItem: k => storage.delete(k) };
+  const context = { module: { exports: {} }, document, window: { electronAPI, localStorage, addEventListener: (name, fn) => windowListeners.set(name, fn), removeEventListener: name => windowListeners.delete(name) }, setTimeout: (fn, delay) => { timers.set(++nextTimer, { fn, at: now + delay }); return nextTimer; }, clearTimeout: id => timers.delete(id), require: name => name === 'react' ? react : name === '../shortcuts' ? shortcutModule.exports : name === './VideoEnhancement' ? videoEnhancementStub : {} };
   context.exports = context.module.exports; vm.runInNewContext(source, context);
   const nodes = () => { const out = []; const visit = node => { if (!node || typeof node !== 'object') return; out.push(node); node.children?.forEach(visit); }; visit(tree); return out; };
   const find = label => nodes().find(node => node.props['aria-label'] === label);
@@ -69,6 +72,23 @@ const source = transformSync(fs.readFileSync(path.join(__dirname, '../src/compon
   find('播放进度').props.onChange({ target: { value: '37.5' } }); assert.equal(media.currentTime, 37.5);
   find('静音').props.onClick(); listeners.get('volumechange')?.(); render(); assert.equal(media.muted, true); assert.ok(find('取消静音'));
   find('音量').props.onChange({ target: { value: '0.4' } }); assert.equal(media.volume, 0.4); assert.equal(media.muted, false);
+  // 音量持久化（用户反馈"重进立马最大声音"）：改动应写入 localStorage，且换集后重新套用。
+  {
+    // 真实浏览器里赋值 video.volume 会自动派发 volumechange；夹具的 media 是普通对象，
+    // 必须显式触发，否则测的不是组件行为而是夹具的缺失。
+    listeners.get('volumechange')?.(); render();
+    const saved = JSON.parse(storage.get('hongguo:player-volume:v1'));
+    assert.equal(saved.v, 0.4, '拖动音量后应持久化新值');
+    assert.equal(saved.muted, false, '应同时持久化静音状态');
+    // 模拟新一集加载：媒体把音量重置为默认 1.0，然后触发 loadedmetadata
+    media.currentSrc = 'episode-2.mp4'; media.volume = 1; media.muted = false;
+    listeners.get('loadedmetadata')?.(); render();
+    assert.equal(media.volume, 0.4, '换集后必须重新套用已保存音量（否则又变最大声）');
+    // 同一媒体内的后续同步不得把用户的调整复原
+    media.volume = 0.9; listeners.get('volumechange')?.(); render();
+    assert.equal(media.volume, 0.9, '同一媒体内用户的音量调整必须保持');
+    assert.equal(JSON.parse(storage.get('hongguo:player-volume:v1')).v, 0.9, '调整后的值应被持久化');
+  }
   assert.equal(find('播放速度'), undefined, 'speed belongs in the lower-right menu');
   assert.ok(find('增加播放速度'), 'speed number must be an independent button');
   find('增加播放速度').props.onClick(); render(); assert.equal(selectedRate, 1.25); assert.equal(find('播放速度'), undefined);

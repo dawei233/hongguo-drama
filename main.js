@@ -3488,9 +3488,16 @@ let windowLayout = 'landscape';
 let landscapeBounds = null;
 let layoutChanging = false;
 const stealth = createStealthController({ screen, getWindow: () => mainWindow });
-// 全屏时的指针轮询：DOM 指针事件在页面失焦时会被 Blink 抑制，轮询不依赖它。
+// 指针轮询：DOM 指针事件在页面失焦时会被 Blink 抑制，轮询不依赖它。
 // 详见 src/native/fullscreen-pointer.js 的说明。
+//
+// 这里**常驻启用**，是否上报由 tick 内部按 isFullScreen() 自行判断。
+// 为什么不用 enter/leave-full-screen 事件来启停：那条路径依赖"事件一定按预期触发"，
+// 一旦接线有偏差（例如 DOM 全屏走的是 enter-html-full-screen）轮询就静默不工作，
+// 而症状恰好与"没修"完全一样，极难排查。常驻的开销是每 120ms 一次 GetCursorPos，
+// 可忽略，换来的是"不依赖任何事件时序"。
 const fullscreenPointer = createFullscreenPointerController({ screen, getWindow: () => mainWindow });
+fullscreenPointer.setEnabled(true);
 ipcMain.handle('set-stealth-mode', async (event, enabled) => {
   if (!mainWindow || event.sender !== mainWindow.webContents || typeof enabled !== 'boolean') return { success: false, error: '无法切换小窗' };
   if (enabled && (mainWindow.isFullScreen() || layoutChanging)) return { success: false, error: '请先退出全屏，再开启隐身小窗' };
@@ -3548,7 +3555,6 @@ ipcMain.handle('set-window-fullscreen', async (event, enabled) => {
     // 不要依赖 enter-full-screen 事件回调里的 isFullScreen()：Electron 触发该事件的瞬间
     // 该值可能尚未更新，会广播出 false（实测诊断：主进程 fullscreen:true，渲染层却没收到）。
     const actual = win.isFullScreen();
-    fullscreenPointer.setEnabled(actual);
     sendToRenderer('window-fullscreen-changed', actual);
     return { success: true, fullscreen: actual };
   } catch (error) {
@@ -3562,8 +3568,6 @@ function onFullScreenChange() {
   setTimeout(() => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
     const value = mainWindow.isFullScreen();
-    // 全屏期间才需要轮询指针（失焦时 DOM 指针事件会被 Blink 抑制）
-    fullscreenPointer.setEnabled(value);
     sendToRenderer('window-fullscreen-changed', value);
   }, 0);
 }

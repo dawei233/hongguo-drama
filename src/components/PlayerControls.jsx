@@ -11,6 +11,20 @@ const formatTime = seconds => {
 };
 const Icon = ({ children }) => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{children}</svg>;
 
+// 音量/静音的持久化键。放在本模块是因为它只被播放器控制条读写。
+const VOLUME_STORAGE_KEY = 'hongguo:player-volume:v1';
+
+/** 读取上次保存的音量；无记录或数据不可用时返回 null（表示沿用浏览器默认）。 */
+const readStoredVolume = () => {
+  try {
+    const value = JSON.parse(window.localStorage.getItem(VOLUME_STORAGE_KEY));
+    if (!value || typeof value !== 'object') return null;
+    const v = Number(value.v);
+    if (!Number.isFinite(v) || v < 0 || v > 1) return null;
+    return { v, muted: value.muted === true };
+  } catch { return null; }
+};
+
 export default function PlayerControls({ danmaku, danmakuSource = 'comments', onDanmakuSourceChange, enhancement, shortcuts = DEFAULT_SHORTCUTS, onToggleFullscreen, videoRef, stageRef, source, available, continuing = false, autoContinue = false, rate, onRateChange, onError, pictureMode = 'fit', onPictureModeChange, portrait = false, windowFill = false, onWindowFill }) {
   const [media, setMedia] = useState({ paused: true, ended: false, time: 0, duration: 0, muted: false, volume: 1 });
   const [fullscreen, setFullscreen] = useState(false);
@@ -84,6 +98,8 @@ export default function PlayerControls({ danmaku, danmakuSource = 'comments', on
       reveal();
     };
     const startDrag = event => { dragging = !!event.target.closest?.('input[type="range"]'); reveal(); };
+    // 明确的用户操作（点击/滚轮）：直接唤出，不经屏幕坐标去重。
+    const onActivity = () => reveal();
     const stopDrag = () => { if (dragging) { dragging = false; reveal(); } };
     const onFocus = event => {
       // Tab and pointerdown reveal immediately; media focus churn is not user activity.
@@ -103,16 +119,27 @@ export default function PlayerControls({ danmaku, danmakuSource = 'comments', on
     stage?.addEventListener('pointerdown', startDrag);
     stage?.addEventListener('focusin', onFocus);
     stage?.addEventListener('focusout', scheduleHide);
+    // 与用户自己维护的项目（hongguo-monorepo/pc 的 attachAutoHideCtrls）对齐：
+    // 指针活动除了绑在播放器元素上，也绑到 document，并且同时听 mousemove —— 不只
+    // Pointer Events 的 pointermove。那边的实现（document + mousemove + wheel + mousedown）
+    // 在同一台机器的双屏环境下能正常唤出控制条。
+    //
+    // 为什么值得多挂这几条：Blink 在页面非 active 时对 hover/指针语义有额外的 active 门禁
+    // （mouse_event_manager.cc 要求 GetFocusController().IsActive()），而 mousemove 与
+    // pointermove 的分发路径并不完全相同；多一条来源就多一分"鼠标移回来即出现"的把握。
+    // mousemove 共用 onPointerMove（靠 screenX/screenY 去重）；点击与滚轮属于明确的用户
+    // 操作，直接 reveal —— 它们不经过去重，否则"原地点击不动鼠标"会被误判为无活动。
+    document.addEventListener('mousemove', onPointerMove);
+    document.addEventListener('wheel', onActivity, { passive: true });
+    document.addEventListener('mousedown', onActivity);
     window.addEventListener('keydown', onKey, true);
     window.addEventListener('keyup', onKey, true);
     window.addEventListener('pointerup', stopDrag);
     window.addEventListener('pointercancel', stopDrag);
+    // 失焦：清掉按键状态、结束拖动（控制条仍按既有规则自动隐藏，不做特例）。
     const onBlur = () => { episodeKeysRef.current.clear(); stopDrag(); };
     window.addEventListener('blur', onBlur);
-    // 窗口重新获得焦点时也唤醒控制条。
-    // 为什么需要：窗口失焦期间（用户去点别的程序），本窗口收不到 pointermove，
-    // 用户切回来后如果指针恰好没再移动，控制条会一直不可见、给人一种"坏了"的感觉。
-    // 这条兜底与全屏实现无关，无论哪种全屏都成立。
+    // 重新获得焦点：把控制条显出来（用户切回来即可见，随后按闲置规则自动隐藏）。
     const onWindowFocus = () => reveal();
     window.addEventListener('focus', onWindowFocus);
     // Source changes and automatic handoffs are not user activity.
@@ -137,6 +164,9 @@ export default function PlayerControls({ danmaku, danmakuSource = 'comments', on
       window.removeEventListener('pointercancel', stopDrag);
       window.removeEventListener('blur', onBlur);
       window.removeEventListener('focus', onWindowFocus);
+      document.removeEventListener('mousemove', onPointerMove);
+      document.removeEventListener('wheel', onActivity);
+      document.removeEventListener('mousedown', onActivity);
       offFullscreenPointer?.();
     };
   }, [portrait, expanded, available, media.paused, media.ended, continuing, autoContinue, menuOpen, danmakuOpen, source, stageRef, shortcuts]);
@@ -146,12 +176,42 @@ export default function PlayerControls({ danmaku, danmakuSource = 'comments', on
     setDanmakuOpen(false);
     const video = videoRef.current;
     if (!video) return;
-    const sync = () => setMedia({ paused: video.paused, ended: video.ended, time: Number.isFinite(video.currentTime) ? video.currentTime : 0,
-      duration: Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0, muted: video.muted, volume: video.volume });
+    // 音量/静音持久化（用户反馈"重进立马最大声音"）。
+    // 上游从未保存过音量，切换剧集或重开播放器都会回到默认的 1.0，听感上很突兀。
+    // 做法与用户自己的项目一致（localStorage 存 { v, muted }）。
+    //
+    // 恢复放在 sync 内的持久化**之前**，而不是另注册一个 loadedmetadata 监听器：
+    // 一是避免"先写默认值再读"的顺序陷阱（那会把用户偏好冲成 1.0）；二是测试夹具用 Map
+    // 存监听器（同名只保留最后一个），两个监听器会互相挤掉，顺序不可控。
+    // 顺带一句：必须在调整 volume 之前判定"这是不是一次新的加载"，否则每次 sync
+    // 都会把正在播放时的音量改动覆盖回去。
+    let appliedKey = null;
+    const persistVolume = videoElement => {
+      try { window.localStorage.setItem(VOLUME_STORAGE_KEY, JSON.stringify({ v: videoElement.volume, muted: videoElement.muted })); } catch { /* 存储不可用时忽略 */ }
+    };
+    const applyStoredVolume = () => {
+      // 每次新的媒体加载（currentSrc 变化）套用一次已保存音量；同一媒体内不再干预，
+      // 否则用户拖动音量条后会被下一次 sync 复原。
+      const key = video.currentSrc || '';
+      if (key === appliedKey) return;
+      appliedKey = key;
+      const saved = readStoredVolume();
+      if (!saved) return;
+      if (video.volume !== saved.v) video.volume = saved.v;
+      if (video.muted !== saved.muted) video.muted = saved.muted;
+    };
+    const sync = () => {
+      applyStoredVolume();
+      setMedia({ paused: video.paused, ended: video.ended, time: Number.isFinite(video.currentTime) ? video.currentTime : 0,
+        duration: Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0, muted: video.muted, volume: video.volume });
+      persistVolume(video);
+    };
     const events = ['play', 'pause', 'ended', 'timeupdate', 'loadedmetadata', 'durationchange', 'volumechange', 'emptied'];
     events.forEach(name => video.addEventListener(name, sync));
     sync();
-    return () => events.forEach(name => video.removeEventListener(name, sync));
+    return () => {
+      events.forEach(name => video.removeEventListener(name, sync));
+    };
   }, [videoRef, source, available]);
 
   // 全屏状态来自主进程的原生窗口全屏，不再是 document.fullscreenElement。
@@ -222,6 +282,7 @@ export default function PlayerControls({ danmaku, danmakuSource = 'comments', on
     if (!video) return;
     video.volume = Number(event.target.value);
     video.muted = video.volume === 0;
+    // volumechange 会触发下面的持久化订阅，这里不必再写一次
   };
 
   return (
