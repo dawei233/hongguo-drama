@@ -67,10 +67,12 @@ export default function App() {
 
   // 退出原生全屏的统一出口。切页、进隐身小窗、切布局都要走这里，
   // 否则任一分支漏掉都会把用户留在"没有侧边栏的全屏界面"里。
+  // 以 IPC 返回的 fullscreen 为准落状态；事件广播只作为系统级变化（F11/菜单/Esc）的补充。
   const exitPlayerFullscreen = useCallback(async () => {
     if (!playerFullscreen) return;
     try {
-      await window.electronAPI?.setWindowFullscreen?.(false);
+      const result = await window.electronAPI?.setWindowFullscreen?.(false);
+      if (result?.success) setPlayerFullscreen(result.fullscreen === true);
     } catch { /* 状态由 onWindowFullscreenChanged 兜底同步 */ }
   }, [playerFullscreen]);
 
@@ -109,7 +111,7 @@ export default function App() {
       case 'browse':
         return <Browse active={page === id} onNavigate={navigate} />;
       case 'player':
-        return playerMounted ? <Player portrait={layout === 'portrait'} episodesOpen={episodesOpen} setEpisodesOpen={setEpisodesOpen} actionsHidden={actionsHidden || (borderless && layout === 'portrait')} active={page === id} target={playerTarget} onSeriesSelected={rememberPlayerSeries} onNavigate={navigate} /> : null;
+        return playerMounted ? <Player portrait={layout === 'portrait'} episodesOpen={episodesOpen} setEpisodesOpen={setEpisodesOpen} actionsHidden={actionsHidden || (borderless && layout === 'portrait')} active={page === id} target={playerTarget} onSeriesSelected={rememberPlayerSeries} onFullscreenChange={setPlayerFullscreen} onNavigate={navigate} /> : null;
       case 'feed':
         return page === 'feed' ? <DramaFeed onNavigate={navigate} /> : null;
       case 'calendar':

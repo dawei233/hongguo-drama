@@ -20,7 +20,7 @@ const localMediaKey = (seriesId, episode) => JSON.stringify([seriesId, episode?.
  *  - 「边下边看」：下一集若还在下载，显示等待态并轮询，下完自动接上
  *  - 断点续播：按 series_id 记住看到第几集、第几秒
  */
-function Player({ target, onNavigate, onSeriesSelected, active = true, portrait = false, actionsHidden = false, episodesOpen = false, setEpisodesOpen }) {
+function Player({ target, onNavigate, onSeriesSelected, onFullscreenChange, active = true, portrait = false, actionsHidden = false, episodesOpen = false, setEpisodesOpen }) {
   const enhancement = useVideoEnhancement();
   const [shortcuts, setShortcuts] = useState(readShortcuts);
   const [showDanmakuControls, setShowDanmakuControls] = useState(false);
@@ -820,8 +820,11 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
       const current = await window.electronAPI?.getWindowFullscreen?.();
       const result = await window.electronAPI?.setWindowFullscreen?.(!current);
       if (!result?.success) throw new Error(result?.error || '全屏切换失败');
+      // 以 IPC 返回值为权威落状态，不要只依赖 window-fullscreen-changed 事件：
+      // 主进程在 enter-full-screen 事件里读到的 isFullScreen() 可能是中间态（false）。
+      onFullscreenChange?.(result.fullscreen === true);
     } catch { showToast('无法进入或退出全屏，请重试'); }
-  }, [portrait, showToast]);
+  }, [portrait, showToast, onFullscreenChange]);
 
   // Capture handled keys before media controls; cancel keyup too so focused buttons cannot toggle twice.
   useEffect(() => {

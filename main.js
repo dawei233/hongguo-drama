@@ -3536,9 +3536,14 @@ ipcMain.handle('set-window-fullscreen', async (event, enabled) => {
     return { success: false, error: error.message };
   }
 });
-// 用户用系统方式（F11 / 窗口菜单 / Esc）改变全屏时，如实同步给渲染层
+// 系统级全屏变化（F11 / 窗口菜单 / Esc）同步给渲染层。
+// 必须延后一拍再读 isFullScreen()：Electron 在触发 enter-full-screen 的瞬间，该值可能
+// 尚未更新为 true，直接读会把 false 广播出去（本 IPC 触发的切换见下面显式广播）。
 function onFullScreenChange() {
-  sendToRenderer('window-fullscreen-changed', Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isFullScreen()));
+  setTimeout(() => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    sendToRenderer('window-fullscreen-changed', mainWindow.isFullScreen());
+  }, 0);
 }
 
 ipcMain.handle('set-window-layout', async (event, mode) => {
