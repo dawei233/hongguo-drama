@@ -11,10 +11,7 @@ export default function useStealthWindow() {
     busy.current = true;
     setStealthError('');
     try {
-      // 进小窗前必须退出全屏：DOM 全屏与原生窗口全屏都要处理，否则窗口会卡在全屏形态
-      // （主进程也会拒绝在全屏时开启小窗，这里先退可避免用户看到一个失败提示）。
       if (enabled && document.fullscreenElement) await document.exitFullscreen();
-      if (enabled && await window.electronAPI?.getWindowFullscreen?.()) await window.electronAPI.setWindowFullscreen(false);
       const result = await window.electronAPI.setStealthMode(enabled);
       if (!result?.success) throw new Error(result?.error || '小窗切换失败，请重试');
     } catch (error) { setStealthError(error.message); }

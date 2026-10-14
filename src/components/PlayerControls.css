@@ -7,20 +7,8 @@
   background: linear-gradient(transparent, rgba(0, 0, 0, .84));
 }
 .player-controls-row { display: flex; align-items: center; gap: 8px; }
-/* 可见性：**显示必须立即生效，绝不能依赖过渡动画**。
- *
- * 这里踩过一个很难查的坑：原先显示与隐藏都只靠 `transition: opacity .18s`。窗口失焦时
- * （副屏全屏 → 去主屏点别的程序 → 回来动鼠标）过渡可能不推进，于是 opacity 卡在 0；
- * 而 pointer-events 是**离散属性**、不受过渡影响，类一去掉就立刻变回 auto ——
- * 结果正是用户看到的现象："控制条出来了但看不见，盲点却能点中"。
- * 这种"看不见却能点"的不对称，本身就是"透明度过渡卡住"的典型特征。
- *
- * 因此把过渡只留在**隐藏**那一侧（淡出），显示侧设为 none（瞬时出现）。
- * CSS 过渡按"变更后状态"声明的属性执行：隐藏→显示走本规则（none，立即），
- * 显示→隐藏走 .controls-hidden 的规则（.18s，淡出）。
- * will-change 让透明度走合成器线程并给控制条独立图层，进一步避免被视频图层压住。 */
-.player-controls { transition: none; will-change: opacity; }
-.player-controls.controls-hidden { opacity: 0; pointer-events: none; transition: opacity .18s ease; }
+.player-controls { transition: opacity .18s ease; }
+.player-controls.controls-hidden { opacity: 0; pointer-events: none; }
 .player-controls button { display: inline-flex; align-items: center; justify-content: center; gap: 3px; min-width: 36px; min-height: 36px; padding: 5px; border: 0; border-radius: 6px; background: transparent; color: inherit; cursor: pointer; }
 .player-controls button:hover { background: rgba(255, 255, 255, .16); }
 .player-controls button:disabled { opacity: .45; cursor: default; }
@@ -47,54 +35,3 @@
 .player-controls-menu .player-picture-mode select { width: 100px; }
 
 .player-controls-menu { max-height: min(70vh, 480px); overflow-y: auto; overscroll-behavior: contain; }
-
-/* ── 全屏布局（Electron 原生窗口全屏）─────────────────────────────────────
-   方案移植自用户自己维护的项目（hongguo-monorepo/pc/backend/static/index.html
-   的 body.fs-mode 规则），那套实现在同一台机器的双屏环境下没有本 bug。
-
-   要点一：用 position:fixed + inset:0 让播放器**彻底脱离父容器约束**。
-   本项目 .player-container 带 `max-width:1000px; margin:0 auto`（Player.css:1-4），
-   上一版全屏样式没覆盖它，导致全屏时内容仍被限宽、居中，两侧留黑、控制条只占中段。
-
-   要点二：控制条用 !important 强制显示。
-   基线规则是 `.player-controls.controls-hidden { opacity:0; pointer-events:none }`，
-   全屏时我们需要"显式显示"能压过它，这与源实现的 `.ctrl-bar.fs-show` 同理。 */
-.player-fullscreen .sidebar,
-.player-fullscreen .window-toolbar,
-.player-fullscreen .compact-navigation,
-.player-fullscreen .stealth-toolbar { display: none !important; }
-.player-fullscreen .main-wrapper { min-width: 0; }
-/* 前缀 .app-layout 是为了压过 index.css 的 `.layout-portrait.player-focused .main-content[...]`
-   —— 两者原本同为 (0,3,0)，而构建产物里本文件排在 index.css 之前，同优先级会被后者盖掉。
-   全屏与竖屏理论上不会同时出现（切布局前会先退出全屏），这里只是防御。 */
-.app-layout.player-fullscreen .main-content[data-page="player"] { padding: 0; overflow: hidden; }
-/* 关键：fixed 铺满，覆盖 max-width:1000px 与 margin:auto。
-   z-index 刻意取 500：要盖住普通页面内容，但必须**低于提示条**（.dm-toast 是 999，
-   见 DownloadManager.css:257）。用 99999 这类大值会把全屏时的操作反馈
-   （如"播放速度 1.5×"、错误提示）整个盖住。 */
-.player-fullscreen .player-container {
-  position: fixed; inset: 0; z-index: 500;
-  max-width: none; margin: 0; padding: 0;
-  display: flex; flex-direction: column;
-  width: 100%; height: 100%; min-height: 0;
-  background: #000; overflow: hidden;
-}
-/* 全屏只留播放器：隐藏剧集列表、剧评、工具栏等所有非播放区域 */
-.player-fullscreen .player-container > :not(.player-viewing-layout):not(.player-empty) { display: none !important; }
-.player-fullscreen .player-viewing-layout {
-  display: flex; flex: 1; min-height: 0; width: 100%; height: 100%;
-}
-.player-fullscreen .player-viewing-layout > :not(.player-stage) { display: none !important; }
-.player-fullscreen .player-stage {
-  position: relative; inset: auto; flex: 1;
-  width: 100%; height: 100%; min-height: 0;
-  max-height: none; margin: 0; border-radius: 0;
-  aspect-ratio: auto; background: #000; overflow: hidden;
-}
-.player-fullscreen .player-stage .player-video,
-.player-fullscreen .player-stage video { width: 100%; height: 100%; object-fit: contain; }
-.player-fullscreen .player-controls {
-  padding: 28px max(20px, env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
-}
-/* 显式显示必须能压过 .controls-hidden（源实现用同样的手段） */
-.player-fullscreen .player-controls:not(.controls-hidden) { opacity: 1 !important; pointer-events: auto !important; }

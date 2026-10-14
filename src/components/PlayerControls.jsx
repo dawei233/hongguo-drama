@@ -14,7 +14,7 @@ const Icon = ({ children }) => <svg width="18" height="18" viewBox="0 0 24 24" f
 // 音量/静音的持久化键。放在本模块是因为它只被播放器控制条读写。
 const VOLUME_STORAGE_KEY = 'hongguo:player-volume:v1';
 
-/** 读取上次保存的音量；无记录或数据不可用时返回 null（表示沿用浏览器默认）。 */
+/** 读取上次保存的音量；无记录或数据不可用时返回 null（表示沿用默认）。 */
 const readStoredVolume = () => {
   try {
     const value = JSON.parse(window.localStorage.getItem(VOLUME_STORAGE_KEY));
@@ -41,33 +41,7 @@ export default function PlayerControls({ danmaku, danmakuSource = 'comments', on
   const speedRef = useRef(null);
   const episodeKeysRef = useRef(new Set());
   const pointerRef = useRef(null);
-  // 指针唤出诊断计数（临时设施，见下方上报用的 useEffect）。
-  const diagRef = useRef({ pointermove: 0, mousemove: 0, poll: 0, activity: 0, focus: 0, blur: 0 });
   const expanded = fullscreen || windowFill;
-
-  // ── 指针唤出诊断上报（临时设施）───────────────────────────────────────────
-  // 背景：副屏全屏下"控制条唤不出"在开发机上无法复现（本地没有显示器），
-  // 只能靠真机数据判断断点在哪一环。每 2 秒把计数追加到主进程的日志文件，
-  // 事后读取即可区分：
-  //   pointermove / mousemove = 渲染层实际收到的 DOM 指针事件数
-  //                             （在窗口失焦期间若为 0，说明事件根本没到渲染层）
-  //   poll                    = 主进程轮询送达渲染层的次数（0 说明轮询没上报或接口没接上）
-  //   focus / blur            = 窗口焦点变化次数
-  //   activity                = document 上的点击/滚轮次数
-  // 定位完成后整体移除（包括 preload 与主进程侧的写文件逻辑）。
-  useEffect(() => {
-    const report = window.electronAPI?.reportPointerDiag;
-    if (!report) return;
-    const id = setInterval(() => {
-      report({
-        ...diagRef.current,
-        focused: document.hasFocus(),
-        expanded: !!document.querySelector('.app-layout.player-fullscreen'),
-        hidden: !!document.querySelector('.player-controls.controls-hidden'),
-      });
-    }, 2000);
-    return () => clearInterval(id);
-  }, []);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -117,70 +91,29 @@ export default function PlayerControls({ danmaku, danmakuSource = 'comments', on
       reveal();
     };
     const onPointerMove = event => {
-      diagRef.current[event.type === 'pointermove' ? 'pointermove' : 'mousemove']++;
       const previous = pointerRef.current;
       pointerRef.current = { x: event.screenX, y: event.screenY };
-      // 判断"这次事件是否代表指针真的动了"。两个信号取**或**，只要有一个表明动了就唤出。
-      //
-      // 只用 screenX/screenY 去重是"主屏正常、副屏失效"的原因：副屏是 1080x1920 竖屏、
-      // 位于 x 负半轴、缩放 1.0（主屏 1.5），这正是 screenX/screenY 最容易不可靠的配置。
-      // 一旦这两个值不随移动变化，原先的判据会把所有真实移动都当成静止、直接 return，
-      // 控制条于是永远唤不出，只能按 Esc。
-      // movementX/movementY 是相对增量，不受该问题影响。
-      //
-      // 只有两个信号**同时**表明没动才跳过（合成事件、切源时的假移动），
-      // 这样上游"静止的合成事件不得唤出控制条"的既有行为仍然成立。
-      const screenUnchanged = previous
-        && previous.x === event.screenX && previous.y === event.screenY;
-      const noMovement = !event.movementX && !event.movementY;
-      if (noMovement && (screenUnchanged || !previous)) return;
+      // Native fullscreen/source changes can dispatch a move without moving the pointer.
+      if (previous ? previous.x === event.screenX && previous.y === event.screenY : !event.movementX && !event.movementY) return;
       reveal();
     };
     const startDrag = event => { dragging = !!event.target.closest?.('input[type="range"]'); reveal(); };
-    // 明确的用户操作（点击/滚轮）：直接唤出，不经屏幕坐标去重。
-    const onActivity = event => { diagRef.current.activity++; void event; reveal(); };
     const stopDrag = () => { if (dragging) { dragging = false; reveal(); } };
     const onFocus = event => {
       // Tab and pointerdown reveal immediately; media focus churn is not user activity.
       if (controlsRef.current?.contains(event.target)) reveal();
       else scheduleHide();
     };
-    // 全屏时的指针移动来自主进程轮询，而不是 DOM 的 pointermove。
-    //
-    // 为什么必须有这一条：页面不是 active（窗口失焦）时，Blink 会抑制 hover/指针语义，
-    // 渲染层收不到 pointermove —— 即使鼠标确实在本窗口上、WM_MOUSEMOVE 也确实送达了
-    // （微软文档：消息发给光标下的窗口，不需要窗口是前台）。实测用户场景正是如此：
-    // 副屏全屏 → 控制条隐藏 → 去别的屏点别的程序 → 回来只移动鼠标（不点击，窗口因此
-    // 不会重新获得焦点）→ 控制条再也唤不出，只能按 Esc。
-    // 轮询不读 DOM、不依赖焦点，所以这个场景能兜住。
-    const offFullscreenPointer = window.electronAPI?.onFullscreenPointerMove?.(() => { diagRef.current.poll++; reveal(); });
     stage?.addEventListener('pointermove', onPointerMove);
     stage?.addEventListener('pointerdown', startDrag);
     stage?.addEventListener('focusin', onFocus);
     stage?.addEventListener('focusout', scheduleHide);
-    // 与用户自己维护的项目（hongguo-monorepo/pc 的 attachAutoHideCtrls）对齐：
-    // 指针活动除了绑在播放器元素上，也绑到 document，并且同时听 mousemove —— 不只
-    // Pointer Events 的 pointermove。那边的实现（document + mousemove + wheel + mousedown）
-    // 在同一台机器的双屏环境下能正常唤出控制条。
-    //
-    // 为什么值得多挂这几条：Blink 在页面非 active 时对 hover/指针语义有额外的 active 门禁
-    // （mouse_event_manager.cc 要求 GetFocusController().IsActive()），而 mousemove 与
-    // pointermove 的分发路径并不完全相同；多一条来源就多一分"鼠标移回来即出现"的把握。
-    // mousemove 共用 onPointerMove（靠 screenX/screenY 去重）；点击与滚轮属于明确的用户
-    // 操作，直接 reveal —— 它们不经过去重，否则"原地点击不动鼠标"会被误判为无活动。
-    document.addEventListener('mousemove', onPointerMove);
-    document.addEventListener('wheel', onActivity, { passive: true });
-    document.addEventListener('mousedown', onActivity);
     window.addEventListener('keydown', onKey, true);
     window.addEventListener('keyup', onKey, true);
     window.addEventListener('pointerup', stopDrag);
     window.addEventListener('pointercancel', stopDrag);
-    // 失焦：清掉按键状态、结束拖动（控制条仍按既有规则自动隐藏，不做特例）。
-    const onBlur = () => { diagRef.current.blur++; episodeKeysRef.current.clear(); stopDrag(); };
+    const onBlur = () => { episodeKeysRef.current.clear(); stopDrag(); };
     window.addEventListener('blur', onBlur);
-    // 重新获得焦点：把控制条显出来（用户切回来即可见，随后按闲置规则自动隐藏）。
-    const onWindowFocus = () => { diagRef.current.focus++; reveal(); };
-    window.addEventListener('focus', onWindowFocus);
     // Source changes and automatic handoffs are not user activity.
     if (menuOpen || danmakuOpen || (!continuing && !available)) reveal();
     else if (!continuing && media.paused && !(media.ended && autoContinue)) {
@@ -202,11 +135,6 @@ export default function PlayerControls({ danmaku, danmakuSource = 'comments', on
       window.removeEventListener('pointerup', stopDrag);
       window.removeEventListener('pointercancel', stopDrag);
       window.removeEventListener('blur', onBlur);
-      window.removeEventListener('focus', onWindowFocus);
-      document.removeEventListener('mousemove', onPointerMove);
-      document.removeEventListener('wheel', onActivity);
-      document.removeEventListener('mousedown', onActivity);
-      offFullscreenPointer?.();
     };
   }, [portrait, expanded, available, media.paused, media.ended, continuing, autoContinue, menuOpen, danmakuOpen, source, stageRef, shortcuts]);
 
@@ -215,22 +143,18 @@ export default function PlayerControls({ danmaku, danmakuSource = 'comments', on
     setDanmakuOpen(false);
     const video = videoRef.current;
     if (!video) return;
-    // 音量/静音持久化（用户反馈"重进立马最大声音"）。
-    // 上游从未保存过音量，切换剧集或重开播放器都会回到默认的 1.0，听感上很突兀。
-    // 做法与用户自己的项目一致（localStorage 存 { v, muted }）。
+    // 音量/静音持久化（用户反馈"重进立马最大声音"）。上游从未保存过音量，
+    // 切换剧集或重开播放器都会回到默认的 1.0。做法与用户自己的项目一致。
     //
-    // 恢复放在 sync 内的持久化**之前**，而不是另注册一个 loadedmetadata 监听器：
-    // 一是避免"先写默认值再读"的顺序陷阱（那会把用户偏好冲成 1.0）；二是测试夹具用 Map
-    // 存监听器（同名只保留最后一个），两个监听器会互相挤掉，顺序不可控。
-    // 顺带一句：必须在调整 volume 之前判定"这是不是一次新的加载"，否则每次 sync
-    // 都会把正在播放时的音量改动覆盖回去。
+    // 顺序要紧：恢复必须在持久化**之前**，否则 sync 会先把媒体默认的 1.0 写进存储、
+    // 把用户偏好冲掉，随后的恢复读到的就是 1.0，持久化形同失效。
+    // 且只在新媒体加载（currentSrc 变化）时恢复一次，否则每次 sync 都会把用户
+    // 正在调整的音量复回去。
     let appliedKey = null;
-    const persistVolume = videoElement => {
-      try { window.localStorage.setItem(VOLUME_STORAGE_KEY, JSON.stringify({ v: videoElement.volume, muted: videoElement.muted })); } catch { /* 存储不可用时忽略 */ }
+    const persistVolume = element => {
+      try { window.localStorage.setItem(VOLUME_STORAGE_KEY, JSON.stringify({ v: element.volume, muted: element.muted })); } catch { /* 存储不可用时忽略 */ }
     };
     const applyStoredVolume = () => {
-      // 每次新的媒体加载（currentSrc 变化）套用一次已保存音量；同一媒体内不再干预，
-      // 否则用户拖动音量条后会被下一次 sync 复原。
       const key = video.currentSrc || '';
       if (key === appliedKey) return;
       appliedKey = key;
@@ -248,26 +172,14 @@ export default function PlayerControls({ danmaku, danmakuSource = 'comments', on
     const events = ['play', 'pause', 'ended', 'timeupdate', 'loadedmetadata', 'durationchange', 'volumechange', 'emptied'];
     events.forEach(name => video.addEventListener(name, sync));
     sync();
-    return () => {
-      events.forEach(name => video.removeEventListener(name, sync));
-    };
+    return () => events.forEach(name => video.removeEventListener(name, sync));
   }, [videoRef, source, available]);
 
-  // 全屏状态来自主进程的原生窗口全屏，不再是 document.fullscreenElement。
-  // 改用原生全屏的原因见 main.js 的 set-window-fullscreen 注释（多显示器下 DOM 全屏
-  // 不参与焦点管理，鼠标事件会被别的窗口截走）。这里同时保留 DOM 全屏的监听：
-  // 隐藏小窗等路径仍可能使用它，两处都同步才不会出现图标与实际不符。
   useEffect(() => {
-    let cancelled = false;
-    const syncDom = () => setFullscreen(document.fullscreenElement === stageRef.current);
-    document.addEventListener('fullscreenchange', syncDom);
-    window.electronAPI?.getWindowFullscreen?.().then((value) => { if (!cancelled) setFullscreen(value === true); });
-    const off = window.electronAPI?.onWindowFullscreenChanged?.((value) => setFullscreen(value === true));
-    return () => {
-      cancelled = true;
-      document.removeEventListener('fullscreenchange', syncDom);
-      off?.();
-    };
+    const sync = () => setFullscreen(document.fullscreenElement === stageRef.current);
+    document.addEventListener('fullscreenchange', sync);
+    sync();
+    return () => document.removeEventListener('fullscreenchange', sync);
   }, [stageRef]);
 
   useEffect(() => {
@@ -321,7 +233,6 @@ export default function PlayerControls({ danmaku, danmakuSource = 'comments', on
     if (!video) return;
     video.volume = Number(event.target.value);
     video.muted = video.volume === 0;
-    // volumechange 会触发下面的持久化订阅，这里不必再写一次
   };
 
   return (

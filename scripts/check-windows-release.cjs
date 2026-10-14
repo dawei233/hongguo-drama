@@ -68,7 +68,7 @@ async function keyHandoff(key, code, expectedSource) {
           result.frames++;
           const controls = getComputedStyle(document.querySelector('.player-controls'));
           if (Number(controls.opacity) > 0 || controls.pointerEvents !== 'none') result.visibleFrames++;
-          if (!document.querySelector('.app-layout.player-fullscreen')) result.fullscreenLost = true;
+          if (document.fullscreenElement !== document.querySelector('.player-stage')) result.fullscreenLost = true;
           result.sourceChanged ||= !!video.currentSrc && video.currentSrc !== originalSource;
           result.nextPlaying = result.sourceChanged && !video.paused && video.readyState >= 2 && video.currentTime > 0.7;
           if (result.nextPlaying) break;
@@ -226,30 +226,8 @@ async function keyHandoff(key, code, expectedSource) {
   const screenshot = await cdp('Page.captureScreenshot', { format: 'png' });
   fs.writeFileSync(path.join(out, 'portable-windows-playback.png'), Buffer.from(screenshot.data, 'base64'));
   await clickControl('全屏');
-  // 原生全屏要经主进程 IPC 并等待 enter-full-screen 事件，不像 DOM 全屏那样在渲染层近乎
-  // 同步，固定 500ms 会误报，改为轮询。失败时再做一次判别性诊断：直接调用一次 IPC，
-  // 看主进程到底怎么回 —— 用于区分「点击链路没接上」与「主进程全屏本身失败」。
-  {
-    const deadline = Date.now() + 5000;
-    let entered = false;
-    while (Date.now() < deadline) {
-      if (await evaluate('!!document.querySelector(".app-layout.player-fullscreen")')) { entered = true; break; }
-      await delay(100);
-    }
-    if (!entered) {
-      const diag = await evaluate(`(async () => {
-        const api = window.electronAPI || {};
-        const before = await api.getWindowFullscreen?.();
-        let direct = null, thrown = '';
-        try { direct = await api.setWindowFullscreen?.(true); } catch (error) { thrown = String(error && error.message); }
-        const after = await api.getWindowFullscreen?.();
-        return JSON.stringify({ cls: document.querySelector('.app-layout')?.className || '',
-          hasGet: typeof api.getWindowFullscreen, hasSet: typeof api.setWindowFullscreen,
-          before, direct, after, thrown });
-      })()`);
-      assert(false, 'Player must enter native window fullscreen; diag=' + diag);
-    }
-  }
+  await delay(500);
+  assert(await evaluate('document.fullscreenElement === document.querySelector(".player-stage")'), 'Player must enter native fullscreen');
   await clickControl('播放');
   await cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 100, y: 100 });
   await delay(2400);
@@ -305,7 +283,7 @@ async function keyHandoff(key, code, expectedSource) {
         result.frames++;
         const controls = getComputedStyle(document.querySelector('.player-controls'));
         if (Number(controls.opacity) > 0 || controls.pointerEvents !== 'none') result.visibleFrames++;
-        if (!document.querySelector('.app-layout.player-fullscreen')) result.fullscreenLost = true;
+        if (document.fullscreenElement !== document.querySelector('.player-stage')) result.fullscreenLost = true;
         result.sourceChanged ||= !!video.currentSrc && video.currentSrc !== originalSource;
         result.nextPlaying = result.sourceChanged && !video.paused && video.readyState >= 2 && video.currentTime > 0.7;
         if (result.nextPlaying) break;
@@ -325,17 +303,8 @@ async function keyHandoff(key, code, expectedSource) {
   assert(await evaluate('getComputedStyle(document.querySelector(".player-controls")).opacity === "1"'), 'Pointer movement after automatic next episode must restore controls');
   result.checks.push('Actual single-file EXE: after default ArrowUp returns to the previous episode, natural ended advances through Player to the expected second local flower episode; every sampled frame retains hidden controls and fullscreen; pointer movement restores controls');
   await clickControl('退出全屏');
-  // 退出同样是异步的主进程往返，改成等条件成立；随后仍留一小段稳定时间，
-  // 让控制条按"退出全屏后闲置"的规则自行隐藏。
-  {
-    const deadline = Date.now() + 5000;
-    while (Date.now() < deadline) {
-      if (!(await evaluate('!!document.querySelector(".app-layout.player-fullscreen")'))) break;
-      await delay(100);
-    }
-  }
   await delay(2400);
-  assert(await evaluate('!document.querySelector(".app-layout.player-fullscreen") && !document.querySelector("video").paused && getComputedStyle(document.querySelector(".player-controls")).opacity === "0"'), 'Ordinary landscape must hide idle controls after exiting fullscreen');
+  assert(await evaluate('!document.fullscreenElement && !document.querySelector("video").paused && getComputedStyle(document.querySelector(".player-controls")).opacity === "0"'), 'Ordinary landscape must hide idle controls after exiting fullscreen');
   result.fullscreenControls = { idleHidden: true, pointerRestores: true, pausedVisible: true, resumedHidden: true, landscapeIdleHidden: true };
   result.checks.push('Actual single-file EXE: fullscreen and ordinary landscape idle hide controls; pointer restores; pause keeps visible; resume hides');
   result.passed = true;

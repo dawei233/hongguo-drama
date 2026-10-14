@@ -41,7 +41,6 @@ const APP_VERSION = app.getVersion() || '1.0.0';
 
 const APP_TITLE = IS_PREVIEW ? '红果短剧预览' : '红果短剧';
 const { createStealthController } = require('./src/native/stealth-window');
-const { createFullscreenPointerController } = require('./src/native/fullscreen-pointer');
 
 let mainWindow = null;
 let storageError = null;
@@ -3488,37 +3487,6 @@ let windowLayout = 'landscape';
 let landscapeBounds = null;
 let layoutChanging = false;
 const stealth = createStealthController({ screen, getWindow: () => mainWindow });
-// 指针轮询：DOM 指针事件在页面失焦时会被 Blink 抑制，轮询不依赖它。
-// 详见 src/native/fullscreen-pointer.js 的说明。
-//
-// 这里**常驻启用**，是否上报由 tick 内部按 isFullScreen() 自行判断。
-// 为什么不用 enter/leave-full-screen 事件来启停：那条路径依赖"事件一定按预期触发"，
-// 一旦接线有偏差（例如 DOM 全屏走的是 enter-html-full-screen）轮询就静默不工作，
-// 而症状恰好与"没修"完全一样，极难排查。常驻的开销是每 120ms 一次 GetCursorPos，
-// 可忽略，换来的是"不依赖任何事件时序"。
-const fullscreenPointer = createFullscreenPointerController({ screen, getWindow: () => mainWindow });
-fullscreenPointer.setEnabled(true);
-// 指针唤出诊断（临时设施）：把渲染层上报的计数与主进程自己的轮询计数追加到日志文件。
-// 背景见 src/components/PlayerControls.jsx 里同名注释 —— 副屏问题无法在开发机复现，
-// 只能靠真机日志判断是"事件没到渲染层"还是"轮询没上报"还是"状态没生效"。
-// 定位完成后与 preload 的 reportPointerDiag、渲染层的上报 effect 一并移除。
-const pointerDiagFile = () => path.join(app.getPath('userData'), 'pointer-diag.log');
-// 用 handle（而不是 on/send）是有意的：本仓库大量测试夹具只桩了 ipcMain.handle，
-// 用 on 会让那些夹具报 "ipcMain.on is not a function"。保持与既有用法一致，
-// 既不改十几个夹具，也少一类脆弱点。
-ipcMain.handle('pointer-diag', (event, payload) => {
-  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return false;
-  try {
-    const file = pointerDiagFile();
-    const line = `${new Date().toISOString()} ${JSON.stringify({ ...payload, mainPollSent: fullscreenPointer.sent, isFullScreen: mainWindow.isFullScreen() })}\n`;
-    // 只保留最近 300 行，避免长期运行时无限增长
-    let existing = '';
-    try { existing = fs.readFileSync(file, 'utf8'); } catch { /* 首次写入 */ }
-    const lines = (existing + line).split('\n').filter(Boolean).slice(-300);
-    fs.writeFileSync(file, lines.join('\n') + '\n');
-  } catch { /* 诊断写入失败不影响功能 */ }
-  return true;
-});
 ipcMain.handle('set-stealth-mode', async (event, enabled) => {
   if (!mainWindow || event.sender !== mainWindow.webContents || typeof enabled !== 'boolean') return { success: false, error: '无法切换小窗' };
   if (enabled && (mainWindow.isFullScreen() || layoutChanging)) return { success: false, error: '请先退出全屏，再开启隐身小窗' };
@@ -3530,69 +3498,6 @@ ipcMain.handle('set-stealth-mode', async (event, enabled) => {
 });
 const episodePanel = createEpisodePanelController({ ipcMain, screen, getMainWindow: () => mainWindow, getLayout: () => windowLayout });
 ipcMain.handle('get-window-layout', () => windowLayout);
-
-// ===== 播放器全屏（Electron 原生窗口全屏）=====
-// 为什么不用 DOM Fullscreen API（stage.requestFullscreen()）：
-//   DOM 全屏只改变渲染层，**不会让窗口成为前台窗口**。多显示器下这点会直接坏掉：
-//   用户在另一块屏幕上点了别的程序后，焦点留在那边，鼠标消息被系统投递给那个前台窗口，
-//   播放器所在窗口收不到 pointermove —— 表现为"全屏后控制条隐藏了就再也唤不出来，
-//   只能按 Esc"，而键盘仍可用（键盘由窗口消息直接投递，不经命中测试）。
-//   实测证据（双屏：主屏 3840x2160 + 副屏竖屏 1080x1920 位于负坐标）：
-//     焦点在别的窗口时，副屏全屏下移动鼠标 5 次，控制条不出现；
-//     把焦点切回本窗口后，同样操作控制条正常出现。
-//   原生全屏由 Windows 参与焦点与 z 序管理，不存在这个问题。
-// 代价：原生全屏是**整个窗口**全屏，DOM 的 :fullscreen 伪类不再生效，因此渲染层改用
-//   fullscreen 状态类（见 PlayerControls / index.css）自行处理"只显示播放器"的布局。
-ipcMain.handle('get-window-fullscreen', () => Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isFullScreen()));
-ipcMain.handle('set-window-fullscreen', async (event, enabled) => {
-  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) {
-    return { success: false, error: '窗口不可用' };
-  }
-  // 与 set-window-layout 保持一致：隐身小窗期间拒绝切换全屏。
-  // 必须在这里判断，不能只靠渲染层的 .stealth-mode 类名 —— 小窗会用 setFullScreenable(false)
-  // 把窗口设为不可全屏，此时 Electron 的 SetFullScreen 是**静默 no-op**，我们会一直等到超时，
-  // 给用户报"全屏切换超时"，把真实原因（窗口被设为不可全屏）掩盖掉。
-  // 主进程的 stealth.enabled 才是权威真相来源。
-  if (stealth.enabled) return { success: false, error: '请先退出隐身小窗再切换全屏' };
-  const win = mainWindow;
-  const want = enabled === true;
-  if (win.isFullScreen() === want) return { success: true, fullscreen: want };
-  try {
-    // 与 set-window-layout 里的退出全屏一致：等待 leave/enter 事件，超时则如实报错，
-    // 不假装成功 —— 渲染层的图标状态依赖这个结果。
-    await new Promise((resolve, reject) => {
-      const name = want ? 'enter-full-screen' : 'leave-full-screen';
-      const done = () => { clearTimeout(timer); resolve(); };
-      const timer = setTimeout(() => { win.removeListener(name, done); reject(new Error('全屏切换超时')); }, 3000);
-      win.once(name, done);
-      win.setFullScreen(want);
-    });
-    // 原生全屏后主动确保窗口为前台窗口。注意：这只覆盖"进入全屏那一刻"。
-    // 用户场景是**之后才失焦**（切到别的屏点别的程序），那时没有任何代码会再调 focus，
-    // 而"鼠标悬停在非前台窗口上"并不会让窗口获得焦点 —— 所以真正兜住用户场景的是
-    // PlayerControls 里的失焦处理与主进程轮询（见下面 fullscreen-pointer 相关实现）。
-    if (want) win.focus();
-    // 用**切换完成后读到的真实值**广播给渲染层。
-    // 不要依赖 enter-full-screen 事件回调里的 isFullScreen()：Electron 触发该事件的瞬间
-    // 该值可能尚未更新，会广播出 false（实测诊断：主进程 fullscreen:true，渲染层却没收到）。
-    const actual = win.isFullScreen();
-    sendToRenderer('window-fullscreen-changed', actual);
-    return { success: true, fullscreen: actual };
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-});
-// 系统级全屏变化（F11 / 窗口菜单 / Esc）同步给渲染层。
-// 必须延后一拍再读 isFullScreen()：Electron 在触发 enter-full-screen 的瞬间，该值可能
-// 尚未更新为 true，直接读会把 false 广播出去（本 IPC 触发的切换见下面显式广播）。
-function onFullScreenChange() {
-  setTimeout(() => {
-    if (!mainWindow || mainWindow.isDestroyed()) return;
-    const value = mainWindow.isFullScreen();
-    sendToRenderer('window-fullscreen-changed', value);
-  }, 0);
-}
-
 ipcMain.handle('set-window-layout', async (event, mode) => {
   if (!mainWindow || event.sender !== mainWindow.webContents || !['portrait', 'landscape'].includes(mode)) {
     return { success: false, error: '无法切换窗口布局' };
@@ -3652,9 +3557,6 @@ function createWindow() {
 
   mainWindow.setMenuBarVisibility(false);
   episodePanel.attach(mainWindow);
-  // 系统级全屏变化（F11、窗口菜单、Esc）也要让渲染层知道，否则图标状态会与实际不符
-  mainWindow.on('enter-full-screen', onFullScreenChange);
-  mainWindow.on('leave-full-screen', onFullScreenChange);
   mainWindow.webContents.once('did-finish-load', () => {
     if (storageError) sendToRenderer('storage-error', storageError);
   });
@@ -3669,7 +3571,6 @@ function createWindow() {
 
   mainWindow.on('closed', () => {
     stealth.dispose();
-    fullscreenPointer.dispose();
     mediaAccess.clear();
     clearOnlineCache();
     for (const job of compatPreparing.values()) { job.cancelled = true; job.controller.abort(); }
