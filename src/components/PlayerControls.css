@@ -7,8 +7,20 @@
   background: linear-gradient(transparent, rgba(0, 0, 0, .84));
 }
 .player-controls-row { display: flex; align-items: center; gap: 8px; }
-.player-controls { transition: opacity .18s ease; }
-.player-controls.controls-hidden { opacity: 0; pointer-events: none; }
+/* 可见性：**显示必须立即生效，绝不能依赖过渡动画**。
+ *
+ * 这里踩过一个很难查的坑：原先显示与隐藏都只靠 `transition: opacity .18s`。窗口失焦时
+ * （副屏全屏 → 去主屏点别的程序 → 回来动鼠标）过渡可能不推进，于是 opacity 卡在 0；
+ * 而 pointer-events 是**离散属性**、不受过渡影响，类一去掉就立刻变回 auto ——
+ * 结果正是用户看到的现象："控制条出来了但看不见，盲点却能点中"。
+ * 这种"看不见却能点"的不对称，本身就是"透明度过渡卡住"的典型特征。
+ *
+ * 因此把过渡只留在**隐藏**那一侧（淡出），显示侧设为 none（瞬时出现）。
+ * CSS 过渡按"变更后状态"声明的属性执行：隐藏→显示走本规则（none，立即），
+ * 显示→隐藏走 .controls-hidden 的规则（.18s，淡出）。
+ * will-change 让透明度走合成器线程并给控制条独立图层，进一步避免被视频图层压住。 */
+.player-controls { transition: none; will-change: opacity; }
+.player-controls.controls-hidden { opacity: 0; pointer-events: none; transition: opacity .18s ease; }
 .player-controls button { display: inline-flex; align-items: center; justify-content: center; gap: 3px; min-width: 36px; min-height: 36px; padding: 5px; border: 0; border-radius: 6px; background: transparent; color: inherit; cursor: pointer; }
 .player-controls button:hover { background: rgba(255, 255, 255, .16); }
 .player-controls button:disabled { opacity: .45; cursor: default; }
