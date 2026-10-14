@@ -37,6 +37,7 @@ const { fetchPublicDetails } = require('./src/native/public-details');
 const { fetchEpisodeComments } = require('./src/native/episode-comments');
 const { fetchDanmaku } = require('./src/native/danmaku');
 const mediaAccess = require('./src/native/media-access').createMediaAccess(process.env.VITE_DEV_SERVER_URL);
+const { createDecryptStream, createGrowingFileStream } = require('./src/native/progressive-media');
 const APP_VERSION = app.getVersion() || '1.0.0';
 
 const APP_TITLE = IS_PREVIEW ? '红果短剧预览' : '红果短剧';
@@ -89,6 +90,17 @@ const onlineCache = new Map();
 const ONLINE_MAX_BYTES = 300 * 1024 * 1024; // 内存缓存上限
 const onlinePreparing = new Map(); // vid -> shared preparation + abort controller
 const onlineSessions = new Map(); // opaque stream ID -> playback lifetime
+// vid -> 在途的「边解密边写分片 MP4」状态。只放**还没写完**的条目：
+// 写完（终态化）后转入 onlineCache，这里的条目随即消失。
+// 在途条目绝不进 onlineCache —— 否则回收逻辑会删掉正在写的文件，
+// 兼容模式/下载复用也会把半成品当成完整产物（见 complete 校验）。
+const onlineStreaming = new Map();
+// 返回可播地址前至少要有这么多字节落盘：ffmpeg 用 empty_moov 把 moov 排在最前，
+// 所以这个量已包含完整 init segment（外加首批媒体分片），播放器不会拿到"零字节的流"。
+const PROGRESSIVE_FIRST_BYTES = 256 * 1024;
+// 等这一小段的上限：超时即如实失败（可重试），避免把"等阈值"变成新的无限阻塞点。
+const PROGRESSIVE_FIRST_BYTES_TIMEOUT = 20000;
+const PROGRESSIVE_POLL_MS = 200;
 
 function onlineCacheTotal() {
   let t = 0;
@@ -114,8 +126,11 @@ function releaseOnlineSession(id) {
   const session = onlineSessions.get(id);
   if (!session) return;
   onlineSessions.delete(id);
-  disposeOnlineDisk(session.entry);
+  // 先停写入进程：最后一个持有该分片流的会话释放时，就不该再有人往临时目录写。
+  stopProgressiveStream(session.entry);
+  // 再取消在途响应，让读者收尾（读者计数归零）后才回收目录，避免删除被占用的文件
   for (const controller of session.requests) controller.abort();
+  disposeOnlineDisk(session.entry);
   const pending = session.job;
   if (pending && ![...onlineSessions.values()].some(s => s.job === pending)) {
     pending.controller.abort();
@@ -126,6 +141,8 @@ function releaseOnlineSession(id) {
 function clearOnlineCache() {
   for (const id of [...onlineSessions.keys()]) releaseOnlineSession(id);
   for (const key of [...onlineCache.keys()]) deleteOnlineCacheEntry(key);
+  // 兜底：任何已经没人持有的在途流都不该继续写盘
+  for (const state of [...onlineStreaming.values()]) stopProgressiveState(state);
 }
 
 
@@ -138,6 +155,22 @@ function disposeOnlineDisk(entry) {
 }
 function deleteOnlineCacheEntry(key) {
   const entry = onlineCache.get(key); onlineCache.delete(key); disposeOnlineDisk(entry);
+}
+
+/**
+ * 停掉某个条目背后的"边解密边写"进程（若已无人持有）。
+ * 与 disposeOnlineDisk 同一个原则：**只有最后一个持有者才回收**，否则"切集"会
+ * 杀掉另一个会话正在读的写盘进程；反之，没人读的进程必须停掉，不能留孤儿进程。
+ * 进程本身由 state.controller 的 abort 结束（createDecryptStream 已绑定该信号）。
+ */
+function stopProgressiveStream(entry) {
+  if (entry?.stream) stopProgressiveState(entry.stream);
+}
+function stopProgressiveState(state) {
+  if ([...onlineSessions.values()].some(session => session.entry?.stream === state)) return;
+  if (onlineStreaming.get(state.vid) === state) onlineStreaming.delete(state.vid);
+  state.abandoned = true;
+  try { state.controller.abort(); } catch (_) {}
 }
 function checkCustomAccess(vid) {
   if (String(vid).startsWith('custom:')) require('./src/native/custom-source').assertEnabled(vid);
@@ -1900,6 +1933,207 @@ function diskMediaResponse(request,entry,session) {
   return new Response(Readable.toWeb(reader),{status:range?206:200,headers});
 }
 
+// ===== 边解密边播（加密 App 片源）=====
+//
+// 旧路径要跑**三遍整集数据**才可能播放：整集下载到 encrypted.mp4 → ffmpeg 整集解密
+// remux（+faststart 必须写完整个文件才能前置 moov）→ 结果整个读进内存再供给。
+// 新路径：让 ffmpeg 直接读远端地址，一边解密一边写**分片 MP4**（empty_moov 把 moov 排在最前），
+// 写到哪就能播到哪；Chromium 对「200 + chunked + 无 Content-Length + 不支持 Range」
+// 按流式源处理，边到边播。写完后再终态化成普通 MP4，换回时长/拖动与缓存复用。
+//
+// 分工：模块 progressive-media.js 负责"起进程"和"把增长中的文件供给成流"；
+// 主进程负责生命周期（谁该被停）、终态化、缓存与回收语义。
+
+/** 分片文件当前大小（还没创建时按 0 处理：ffmpeg 启动有几百毫秒延迟）。 */
+function progressivePartSize(state) {
+  try { return fs.statSync(state.partPath).size; }
+  catch (_) { return 0; }
+}
+
+/** 可被 abort 唤醒的等待：取消时不必等满一个轮询周期。 */
+function sleepUnlessAborted(ms, signal) {
+  return new Promise(resolve => {
+    const done = () => { clearTimeout(timer); signal?.removeEventListener('abort', done); resolve(); };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener('abort', done, { once: true });
+    if (signal?.aborted) done();
+  });
+}
+
+/**
+ * 返回可播地址前，只等"够播的一小段"：
+ *  · empty_moov 让 moov（init segment）排在最前，达到阈值即已包含完整初始化段；
+ *  · 生产者正常结束（文件已完整）也直接放行；
+ *  · 生产者失败 → 如实抛出（交给既有恢复路径重试别的候选）；
+ *  · 上限 PROGRESSIVE_FIRST_BYTES_TIMEOUT：超时且一个字节都没有 ⇒ 如实失败（可重试），
+ *    已经有数据就交给播放器继续等（界面显示"正在加载视频…"，不是错误分支）。
+ * 等待期间照常发 online-play-progress（无总长 ⇒ percent 为 0），保持既有占位层可见。
+ */
+async function waitForProgressiveStart(state) {
+  const deadline = Date.now() + PROGRESSIVE_FIRST_BYTES_TIMEOUT;
+  let lastProgress = 0;
+  for (;;) {
+    if (state.result !== undefined) {
+      if (state.result !== 'ok') throw state.result;
+      return;
+    }
+    const size = progressivePartSize(state);
+    if (size >= PROGRESSIVE_FIRST_BYTES) return;
+    if (state.controller.signal.aborted) throw new Error('已取消播放');
+    if (Date.now() >= deadline) {
+      if (size > 0) return;
+      // mediaRetryable: 让 withMediaRecovery 换候选重试，prepare 失败后渲染层也走既有恢复路径
+      throw mediaTransferError('片源解密长时间没有数据，请重新连接片源');
+    }
+    if (Date.now() - lastProgress >= 150) { state.progress?.(size, 0, 'downloading'); lastProgress = Date.now(); }
+    await sleepUnlessAborted(PROGRESSIVE_POLL_MS, state.controller.signal);
+  }
+}
+
+/**
+ * 分片文件只为"边写边播"存在：终态化成功、且没有读者在读它之后删掉，
+ * 免得在线缓存里长期留着两份同内容的文件（读者计数由响应收尾出口维护）。
+ */
+function removeProgressivePartWhenIdle(state) {
+  if (!state.removePartWhenIdle || state.readers) return;
+  state.removePartWhenIdle = false;
+  try { fs.unlinkSync(state.partPath); } catch (_) {}
+}
+
+/**
+ * 分片写完后终态化：转成普通 MP4（+faststart，只读本地文件，很快），
+ * 换回"有 duration、可拖动、可复用缓存"。失败不影响已经在播的分片流，只是拿不回这两样。
+ */
+async function finalizeProgressiveEntry(state) {
+  try {
+    if (state.abandoned) return;
+    if (!progressivePartSize(state)) throw new Error('媒体解密没有生成可用文件');
+    const finalPath = path.join(state.disk.directory, 'video.mp4');
+    // 输入是本地已解密文件，不需要 -decryption_key（也就不必再有密钥材料经过参数）
+    await runMediaFfmpeg(['-y', '-hide_banner', '-loglevel', 'error', '-i', state.partPath,
+      '-map', '0:v:0', '-map', '0:a?', '-c', 'copy', '-movflags', '+faststart', '-f', 'mp4', finalPath],
+    { failureMessage: code => `已解密的媒体整理失败（FFmpeg 退出码 ${code}）` });
+    const size = fs.statSync(finalPath).size;
+    // 半成品不得被当成完整产物：拿不到有效视频轨或时长就不入缓存
+    const ffprobe = resolveFfmpeg('ffprobe');
+    const info = ffprobe ? await probeVideoInfo(ffprobe, finalPath) : null;
+    if (!info || ![info.w, info.h, info.duration].every(value => Number.isFinite(value) && value > 0)) {
+      throw new Error('解密后的媒体缺少有效视频轨或时长');
+    }
+    state.filePath = finalPath; state.size = size; state.finalized = true;
+    // 已经在播的请求：后续请求改走 diskMediaResponse（支持 Range ⇒ 恢复时长与拖动）
+    state.removePartWhenIdle = true;
+    removeProgressivePartWhenIdle(state);
+    if (state.abandoned) return;
+    const entry = state.entry;
+    // 只有"当前这一份在途流"才允许入缓存：被强制作废 / 换了片源的旧结果不能覆盖新条目
+    if (entry && onlineStreaming.get(state.vid) === state) {
+      onlineStreaming.delete(state.vid);
+      Object.assign(entry, { filePath: finalPath, size, complete: true });
+      onlineCache.set(state.vid, entry);
+      trimOnlineCache();
+    }
+    state.progress?.(size, size, 'ready');
+  } catch (error) {
+    // 终态化失败不打断播放（分片流继续供片），只是该条目无法拖动、不入缓存
+    state.finalizeError = error;
+    console.warn('[Online] 解密结果终态化失败:', error.message);
+  }
+}
+
+/**
+ * 启动"边解密边写分片 MP4"，并把可播地址所需的条目填好。
+ * 返回时**不等整集写完**（只等 waitForProgressiveStart 的阈值）。
+ * 同一个 vid 上同一片源已有在途流时复用它，避免为同一集起第二个 ffmpeg。
+ */
+async function startProgressiveOnlineEntry({ vid, playInfo, seriesId, vidIndex, signal, progress, entry }) {
+  if (!/^[a-f\d]{32}$/i.test(playInfo.contentKey || '')) throw new Error('片源解密密钥格式无效');
+  const identity = JSON.stringify([playInfo.url, playInfo.contentKey, playInfo.spadeA]);
+  let state = onlineStreaming.get(vid);
+  if (!state || state.identity !== identity || state.abandoned) {
+    const disk = { directory: await fsp.mkdtemp(path.join(app.getPath('temp'), 'hongguo-online-')), readers: 0 };
+    const controller = new AbortController();
+    // 交给会话之前，job 的取消要能停掉写入进程（否则"准备中就被切集"会留下孤儿 ffmpeg）；
+    // 交给会话之后，生命周期改由会话持有关系决定（stopProgressiveStream），
+    // 否则释放"创建它的那个会话"会误杀另一个复用同一片源的会话正在读的写盘进程。
+    const forward = () => { if (!state.owned) controller.abort(); };
+    signal?.addEventListener('abort', forward, { once: true });
+    state = {
+      vid, playInfo, identity, disk, partPath: path.join(disk.directory, 'video.part.mp4'), controller, progress,
+      filePath: null, size: 0, result: undefined, finalized: false, abandoned: false, finalizeError: null,
+      owned: false, readers: 0, removePartWhenIdle: false, entry: null, handle: null,
+    };
+    if (signal?.aborted) controller.abort();
+    try {
+      state.handle = createDecryptStream({ ffmpegPath: resolveFfmpeg('ffmpeg'), inputUrl: playInfo.url,
+        contentKey: playInfo.contentKey, outputPath: state.partPath, signal: controller.signal,
+        spawn: require('child_process').spawn });
+    } catch (error) {
+      signal?.removeEventListener('abort', forward);
+      disposeOnlineDisk({ disk });
+      throw error;
+    }
+    onlineStreaming.set(vid, state);
+    // 正常结束 → 终态化；失败 → 记下终态，让供给端如实收尾（不再假装还在生产）
+    state.handle.done.then(() => { state.result = 'ok'; void finalizeProgressiveEntry(state); }, error => {
+      state.result = error;
+      if (onlineStreaming.get(vid) === state) onlineStreaming.delete(vid);
+    });
+  }
+  try {
+    await waitForProgressiveStart(state);
+  } catch (error) {
+    // 起播前就失败/被取消：不留进程、不留临时目录、不留半成品
+    state.abandoned = true;
+    try { state.controller.abort(); } catch (_) {}
+    if (onlineStreaming.get(vid) === state) onlineStreaming.delete(vid);
+    disposeOnlineDisk({ disk: state.disk });
+    throw error;
+  }
+  // 交给会话：此后写入进程的生死由"还有没有会话持有它"决定（stopProgressiveStream）
+  state.owned = true;
+  if (state.controller.signal.aborted) throw new Error('已取消播放');
+  if (!state.entry) state.entry = entry;   // 入缓存用的规范条目：由真正起进程的那次准备持有
+  return Object.assign(entry, { vid, disk: state.disk, streamPath: state.partPath, stream: state,
+    playInfo, seriesId: String(seriesId || ''), vidIndex: Number(vidIndex) || 0 });
+}
+
+/**
+ * 供给"正在增长的分片 MP4"。
+ * 响应必须是「200 + chunked + 不带 Content-Length / Accept-Ranges」：
+ * 带上任何一个，Chromium 就不把它当流式源，而是先等整段 —— 那就退回"缓冲慢"了。
+ * 本阶段忽略 Range（此时无法给出一致的区间语义；终态化之后的请求才有 Range）。
+ */
+function progressiveMediaResponse(request, entry, session, state) {
+  const headers = { 'Content-Type': 'video/mp4', 'Cache-Control': 'no-store' };
+  if (request.method === 'HEAD') return new Response(null, { status: 200, headers });
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  session.requests.add(controller);
+  request.signal.addEventListener('abort', abort, { once: true });
+  if (request.signal.aborted) abort();
+  state.readers = (state.readers || 0) + 1;
+  // 与 diskMediaResponse 同一套"读者钉住目录"的账：目录回收要等读者收尾（Windows 上删除被占用的文件会失败）
+  entry.disk.readers = (entry.disk.readers || 0) + 1;
+  // 唯一收尾出口：读完 / 取消 / 中断都经 onClose 回来，读者计数与会话订阅不会漏
+  const close = () => {
+    session.requests.delete(controller);
+    request.signal.removeEventListener('abort', abort);
+    state.readers = Math.max(0, state.readers - 1);
+    entry.disk.readers = Math.max(0, (entry.disk.readers || 0) - 1);
+    removeProgressivePartWhenIdle(state);
+    disposeOnlineDisk(entry);
+  };
+  const body = createGrowingFileStream({
+    filePath: state.partPath,
+    // 生产者（成功或失败）都已结束时就不再等：读完已有的字节即收尾
+    isRunning: () => state.result === undefined,
+    signal: controller.signal,
+    onClose: close,
+  });
+  return new Response(body, { status: 200, headers });
+}
+
 function registerStreamProtocol() {
   protocol.handle(STREAM_SCHEME, mediaWithCors(async (request) => {
     const url = new URL(request.url);
@@ -1914,6 +2148,22 @@ function registerStreamProtocol() {
     if (entry.buffer) {
       if (session.mediaStarted && entry.mediaIdentity && session.mediaIdentity !== entry.mediaIdentity) return new Response('media changed', { status: 502 });
       return bufferedMediaResponse(request, entry.buffer);
+    }
+    // 边解密边播：分片文件一直在增长，供给"读到哪送到哪"的流式响应
+    if (entry.stream) {
+      const state = entry.stream;
+      // 终态化完成、且**没有响应正在流式供片**时，才让新请求改走支持 Range 的磁盘供给。
+      // 不在"读到一半"时换表示：分片 MP4 与 faststart 普通 MP4 的字节布局不同，
+      // 播放器把两种字节混进同一个解复用器会解析错乱。等本次流式响应自然读完（EOF）之后，
+      // 后续请求（重播、重试、渲染层重新取源）才拿到可拖动、可 Range 的终态文件。
+      if (state.finalized && state.filePath && !state.readers) {
+        entry.filePath = state.filePath; entry.size = state.size;
+        return diskMediaResponse(request, entry, session);
+      }
+      // 解密已经失败：不要把截断的流当 200 发出去，让播放器走既有恢复路径
+      if (state.result && state.result !== 'ok') return new Response('media unavailable', { status: 502 });
+      entry.lastUsed = Date.now();
+      return progressiveMediaResponse(request, entry, session, state);
     }
     const range = request.headers.get('range');
     if (range && !/^bytes=(?:\d+-\d*|-\d+)$/.test(range)) return new Response(null, { status: 416 });
@@ -2051,44 +2301,55 @@ function registerLocalProtocol() {
   }));
 }
 
+/**
+ * 跑一次本地 FFmpeg（整集解密 remux / 分片写完后的终态化 remux）。
+ * 「密钥绝不进日志」的规则收敛在这一处：统一丢弃 stderr（可能含私密输入路径或密钥材料），
+ * 对外只报退出码；**绝不把参数写进日志**。
+ */
+function runMediaFfmpeg(args, { signal, cancelToken, failureMessage } = {}) {
+  const executable = resolveFfmpeg('ffmpeg');
+  if (!executable) return Promise.reject(new Error('未找到内置 FFmpeg，无法准备该片源'));
+  return new Promise((resolve, reject) => {
+    const { spawn } = require('child_process');
+    const child = spawn(executable, args, { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+    let cancelled = false, killTimer;
+    const abort = () => {
+      if (cancelled) return;
+      cancelled = true; child.kill('SIGTERM');
+      killTimer = setTimeout(() => child.kill('SIGKILL'), 2000);
+    };
+    const cleanup = () => {
+      clearTimeout(killTimer);
+      signal?.removeEventListener('abort', abort);
+      cancelToken?.unsubscribe(abort);
+    };
+    // Discard native diagnostics: they may contain private input paths or key material.
+    child.stderr.on('data', () => {});
+    signal?.addEventListener('abort', abort, { once: true });
+    cancelToken?.subscribe(abort);
+    if (signal?.aborted || cancelToken?.reason) abort();
+    child.once('error', () => { cleanup(); reject(new Error('无法启动内置 FFmpeg')); });
+    child.once('close', code => {
+      cleanup();
+      if (cancelled) reject(new Error('已取消媒体解密'));
+      else if (code !== 0) reject(new Error(typeof failureMessage === 'function'
+        ? failureMessage(code) : `媒体解密失败（FFmpeg 退出码 ${code}）`));
+      else resolve();
+    });
+  });
+}
+
 /** App CENC uses native FFmpeg for both senc and saiz/saio layouts. Never log key/args. */
 async function decryptContentKeyFile(input, output, contentKey, { signal, cancelToken } = {}) {
   if (typeof contentKey !== 'string' || !/^[a-f\d]{32}$/i.test(contentKey)) throw new Error('片源解密密钥格式无效');
   if (signal?.aborted) throw new Error('已取消媒体解密');
   cancelToken?.throwIfRequested();
-  const executable = resolveFfmpeg('ffmpeg');
-  if (!executable) throw new Error('未找到内置 FFmpeg，无法准备该片源');
+  if (!resolveFfmpeg('ffmpeg')) throw new Error('未找到内置 FFmpeg，无法准备该片源');
   try {
-    await new Promise((resolve, reject) => {
-      const { spawn } = require('child_process');
-      const child = spawn(executable, ['-y', '-hide_banner', '-loglevel', 'error',
-        '-decryption_key', contentKey, '-i', input, '-map', '0:v:0', '-map', '0:a?',
-        '-c', 'copy', '-movflags', '+faststart', '-f', 'mp4', output],
-      { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
-      let cancelled = false, killTimer;
-      const abort = () => {
-        if (cancelled) return;
-        cancelled = true; child.kill('SIGTERM');
-        killTimer = setTimeout(() => child.kill('SIGKILL'), 2000);
-      };
-      const cleanup = () => {
-        clearTimeout(killTimer);
-        signal?.removeEventListener('abort', abort);
-        cancelToken?.unsubscribe(abort);
-      };
-      // Discard native diagnostics: they may contain private input paths or key material.
-      child.stderr.on('data', () => {});
-      signal?.addEventListener('abort', abort, { once: true });
-      cancelToken?.subscribe(abort);
-      if (signal?.aborted || cancelToken?.reason) abort();
-      child.once('error', () => { cleanup(); reject(new Error('无法启动内置 FFmpeg')); });
-      child.once('close', code => {
-        cleanup();
-        if (cancelled) reject(new Error('已取消媒体解密'));
-        else if (code !== 0) reject(new Error(`媒体解密失败（FFmpeg 退出码 ${code}），请重新获取片源后重试`));
-        else resolve();
-      });
-    });
+    await runMediaFfmpeg(['-y', '-hide_banner', '-loglevel', 'error',
+      '-decryption_key', contentKey, '-i', input, '-map', '0:v:0', '-map', '0:a?',
+      '-c', 'copy', '-movflags', '+faststart', '-f', 'mp4', output],
+    { signal, cancelToken, failureMessage: code => `媒体解密失败（FFmpeg 退出码 ${code}），请重新获取片源后重试` });
     if (signal?.aborted) throw new Error('已取消媒体解密');
     cancelToken?.throwIfRequested();
     if ((await fsp.stat(output)).size === 0) throw new Error('媒体解密没有生成可用文件');
@@ -2195,6 +2456,17 @@ ipcMain.handle('prepare-online-play', async (event, payload) => {
           const prepared = await withMediaRecovery(key,seriesId,{playInfo:checkedPlayInfo,force,signal:controller.signal},async playInfo => {
             const entry = {size:0,lastUsed:Date.now(),seriesId:String(seriesId||''),vidIndex:Number(vidIndex)||0};
             if (playInfo.format === 'hls') await prepareHlsEntry(playInfo,entry,controller.signal,received => progress(received,0));
+            // 加密的 App 片源（contentKey）：不再等整集下载 + 整集解密，
+            // 改成"ffmpeg 直接读远端地址、边解密边写分片 MP4"，够播的一小段落盘后立即返回地址。
+            else if (playInfo.contentKey && !playInfo.spadeA) {
+              await startProgressiveOnlineEntry({ vid: key, playInfo, seriesId, vidIndex, signal: controller.signal, progress, entry });
+              if (controller.signal.aborted) throw new Error('已取消播放');
+              // 注意 complete 保持 false：写完（终态化）之前绝不进 onlineCache，
+              // 也就不会被回收逻辑删掉正在写的文件、不会被兼容模式当成完整输入。
+              // spadeA 仍走 worker 整集解密（没有 ffmpeg 命令行路径），本次不改。
+              return Object.assign(entry, { vid: key,
+                source: /^custom:[^:]+/.exec(key)?.[0] || /^(xifan|hema):/.exec(key)?.[1] || 'hongguo' });
+            }
             else if (!prefetch && !playInfo.spadeA && !playInfo.contentKey) return {...entry,playInfo};
             else {
               entry.buffer = await fetchDecryptedEpisodeOnce(key,progress,seriesId,playInfo,controller.signal,prefetch?ONLINE_MAX_BYTES:Infinity);
@@ -2452,7 +2724,10 @@ async function transcodeForPlayback(payload, job = { controller: new AbortContro
       const vid = payload.vid;
       if (!vid) return { success: false, error: '既没有本地文件，也没有 vid' };
       const cached = !force && onlineCache.get(String(vid));
-      if (cached?.filePath) { diskInput = cached; cached.disk.readers++; inputPath = cached.filePath; }
+      // 边解密边播期间的分片条目不会进 onlineCache，这里再要求 complete：
+      // 半成品文件绝不能当转码输入（否则只会产出损坏结果）。
+      // 拒绝是可恢复的：该集终态化完成并入缓存后，重试即命中 cached.filePath。
+      if (cached?.complete && cached.filePath) { diskInput = cached; cached.disk.readers++; inputPath = cached.filePath; }
       else {
         const playInfo = String(vid).startsWith('custom:') ? await hongguo.fetchPlayUrlSingle(String(vid),seriesId,{force:!!force}) : null;
         tmpInput = path.join(getCompatDir(), `.tmp_${randomUUID()}.mp4`);
@@ -2464,7 +2739,8 @@ async function transcodeForPlayback(payload, job = { controller: new AbortContro
           }
         });
         else {
-          const buf = cached?.buffer || await fetchDecryptedEpisode(String(vid), () => {}, seriesId, playInfo, signal, Infinity, !!force);
+          const buf = (cached?.complete && cached.buffer)
+            || await fetchDecryptedEpisode(String(vid), () => {}, seriesId, playInfo, signal, Infinity, !!force);
           checkCancelled(); fs.writeFileSync(tmpInput,buf);
         }
         inputPath = tmpInput;

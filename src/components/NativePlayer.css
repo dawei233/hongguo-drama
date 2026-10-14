@@ -1,0 +1,166 @@
+/* ── 前台播放器（移植自用户自有项目） ────────────────────────────────────────
+   来源：hongguo-monorepo/pc/backend/static/index.html
+     · 播放器 CSS 原文：第 221–277 行
+     · 播放器 DOM  原文：
+         #overlay 一族  第 615–624 行  → NativePlayerOverlay.jsx
+         #dl-bar  一族  第 625–628 行  → NativePlayerOverlay.jsx
+         #ctrl-bar 一族 第 629–653 行  → PlayerControls.jsx
+     · 播放器 JS   原文：
+         toggleFullscreen / attachAutoHideCtrls / detachAutoHideCtrls
+                        第 2150–2216 行 → PlayerControls.jsx（逐字）
+         全屏变化同步   第 2173–2179 行 → Player.jsx
+         下载进度/缓冲  第 1986–2092 行 → NativePlayerOverlay.jsx
+
+   移植方式：CSS 逐字搬运，只做三处**必要**替换 ——
+     1) 作用域：源根容器 .player-wrap 改成附加在 .player-stage 上的 .native-player，
+        源选择器统一加 .native-player 前缀（唯一例外见下），避免污染本仓库既有样式。
+        —— body.fs-mode / .player-stage:fullscreen 两族保持源写法：它们本来就作用在
+           document.body 与全屏元素上，作用域类加不加都一样，保持原样便于与源对照。
+           其中针对应用外壳的选择器换成本仓库的类名（.sidebar / .window-toolbar /
+           .compact-navigation / .stealth-toolbar / .player-container 等）。
+     2) 变量：源用 var(--grad)（本仓库没有该变量），改用语义等价的 var(--accent)。
+     3) 旋转关键帧：源自带 @keyframes spin，本仓库 src/index.css:101 已有**同名同定义**的
+        规则，故省略重复定义，.spinner 直接复用既有动画。
+   未照搬的源规则在文件末尾集中列出。
+   ─────────────────────────────────────────────────────────────────────────── */
+
+/* ══ 控制条 .ctrl-bar ══════════════════════════════════════════════════════
+   显隐机制（务必与源保持一致，别改回 React 状态驱动）：
+     · 默认 opacity:0 + pointer-events:none；
+     · 窗口化：靠 .native-player:hover 显示；
+     · 全屏：主动把 :hover 也压成 opacity:0，只有 JS 加的 .fs-show 能显示，
+       且用 !important 压过一切；
+     · 鼠标活动由 document 上的四个事件驱动（见 PlayerControls.jsx），3 秒无操作移除
+       .fs-show。 */
+.native-player .ctrl-bar {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 12;
+  background: linear-gradient(transparent, rgba(0, 0, 0, .85));
+  padding: 18px 12px 8px;
+  opacity: 0; transition: opacity .25s; pointer-events: none;
+}
+.native-player:hover .ctrl-bar, .native-player .ctrl-bar.show { opacity: 1; pointer-events: auto; }
+
+.native-player .ctrl-seek { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.native-player .ctrl-seek input[type=range] { flex: 1; height: 4px; -webkit-appearance: none; appearance: none; background: rgba(255, 255, 255, .25); border-radius: 2px; outline: none; cursor: pointer; }
+.native-player .ctrl-seek input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 12px; height: 12px; border-radius: 50%; background: var(--accent); border: none; cursor: pointer; }
+.native-player .time { color: #fff; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+.native-player .ctrl-btns { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.native-player .ctrl-btns button { background: rgba(255, 255, 255, .12); border: none; color: #fff; font-size: 12.5px; padding: 6px 12px; border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 4px; transition: background .15s; white-space: nowrap; }
+.native-player .ctrl-btns button:hover { background: rgba(255, 255, 255, .24); }
+/* 源此处为 var(--grad)（本仓库无此变量），改用语义等价的 --accent */
+.native-player .ctrl-btns button.active { background: var(--accent); }
+.native-player .ctrl-btns button#btn-play { font-size: 15px; padding: 6px 14px; border-radius: 50%; width: 38px; height: 38px; justify-content: center; }
+.native-player .ep-pos { color: rgba(255, 255, 255, .85); font-size: 12.5px; margin: 0 4px; white-space: nowrap; }
+.native-player .spacer { flex: 1; }
+
+.native-player .vol { display: flex; align-items: center; gap: 4px; }
+.native-player .vol button { padding: 6px 8px; }
+.native-player .vol input[type=range] { width: 70px; height: 4px; -webkit-appearance: none; appearance: none; background: rgba(255, 255, 255, .25); border-radius: 2px; outline: none; cursor: pointer; }
+.native-player .vol input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 11px; height: 11px; border-radius: 50%; background: #fff; border: none; cursor: pointer; }
+
+.native-player .qwrap { position: relative; }
+.native-player .qlist { position: absolute; bottom: 42px; right: 0; min-width: 108px; background: #181c26; border: 1px solid #262d3d; border-radius: 10px; padding: 5px; z-index: 20; box-shadow: 0 8px 24px rgba(0, 0, 0, .5); }
+.native-player .qlist .qitem { padding: 7px 12px; font-size: 12.5px; color: #cfd4e0; border-radius: 6px; cursor: pointer; display: flex; justify-content: space-between; gap: 10px; }
+.native-player .qlist .qitem:hover { background: rgba(255, 255, 255, .08); }
+.native-player .qlist .qitem.active { color: var(--accent); font-weight: 600; }
+
+/* ══ 准备/下载进度覆盖层 .player-overlay + 顶部进度条 .dl-bar ═════════════════ */
+.native-player .player-overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; background: rgba(0, 0, 0, .55); color: #fff; backdrop-filter: blur(4px); z-index: 10; }
+.native-player .player-overlay.hidden { display: none; }
+.native-player .player-overlay .msg { font-size: 15px; font-weight: 600; }
+.native-player .player-overlay .sub { font-size: 12.5px; color: rgba(255, 255, 255, .72); max-width: 86%; text-align: center; word-break: break-all; }
+/* 源自带 @keyframes spin；本仓库 src/index.css:101 已有同名同定义，复用即可 */
+.native-player .spinner { width: 40px; height: 40px; border: 3px solid rgba(255, 255, 255, .25); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
+.native-player .player-overlay .dl-pct { font-size: 64px; font-weight: 800; line-height: 1; background: linear-gradient(135deg, #ff9d66, #ff4757); -webkit-background-clip: text; -webkit-text-fill-color: transparent; font-variant-numeric: tabular-nums; animation: pctPulse 1.6s ease-in-out infinite; }
+@keyframes pctPulse { 0%, 100% { opacity: 1; } 50% { opacity: .75; } }
+.native-player .player-overlay .dl-progress { width: min(320px, 70%); height: 6px; border-radius: 6px; background: rgba(255, 255, 255, .18); overflow: hidden; }
+/* 源此处为 var(--grad) */
+.native-player .player-overlay .dl-progress .dl-progress-fill { height: 100%; border-radius: 6px; background: var(--accent); transition: width .4s; width: 0; }
+.native-player .player-overlay .retry { margin-top: 4px; padding: 8px 20px; border-radius: 20px; border: none; background: var(--accent); color: #fff; font-size: 13px; cursor: pointer; }
+
+.native-player .dl-bar { position: absolute; left: 0; right: 0; top: 0; height: 4px; background: rgba(255, 255, 255, .15); z-index: 9; }
+/* 源此处为 var(--grad) */
+.native-player .dl-bar .dl-fill { height: 100%; background: var(--accent); transition: width .4s; width: 0; }
+.native-player .dl-bar .dl-text { position: absolute; right: 6px; top: 6px; font-size: 11px; color: #fff; background: rgba(0, 0, 0, .55); padding: 2px 8px; border-radius: 10px; }
+
+/* ══ 全屏 ══════════════════════════════════════════════════════════════════
+   原生窗口全屏走 body.fs-mode；DOM 全屏只在没有 electronAPI 时作回退，
+   其全屏元素就是 .player-stage。两族都照源的写法保留。 */
+.player-stage:fullscreen { aspect-ratio: auto; width: 100vw; height: 100vh; border-radius: 0; border: none; background: #000; }
+.player-stage:fullscreen .ctrl-bar, body.fs-mode .ctrl-bar { opacity: 0; pointer-events: none; }
+.player-stage:fullscreen:hover .ctrl-bar, .player-stage:fullscreen .ctrl-bar.show, body.fs-mode .native-player:hover .ctrl-bar { opacity: 0; pointer-events: none; }
+.player-stage:fullscreen .ctrl-bar.fs-show, body.fs-mode .ctrl-bar.fs-show { opacity: 1 !important; pointer-events: auto !important; }
+.player-stage:fullscreen .dl-text { top: auto; bottom: 60px; }
+.player-stage:fullscreen .player-video { object-fit: contain; }
+.player-stage:fullscreen .ctrl-bar { padding: 28px max(20px, env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left)); }
+body.fs-mode .dl-text { top: auto; bottom: 64px; }
+body.fs-mode .spinner { border-top-color: var(--accent); }
+
+/* ══ body.fs-mode：全屏时"只留播放器" ═══════════════════════════════════════
+   源的对应规则是 body.fs-mode .sidebar/.topbar/#player-view/... （第 272–277 行），
+   选择器换成目标仓库的应用外壳类名。z-index 取 500 而不是极大值：必须低于提示条
+   （.dm-toast 是 999，见 DownloadManager.css），否则全屏时的操作反馈会被整个盖住。
+   与 .layout-portrait.player-fullscreen 的同名规则是叠加关系，不冲突。 */
+body.fs-mode { overflow: hidden; }
+body.fs-mode .sidebar,
+body.fs-mode .window-toolbar,
+body.fs-mode .compact-navigation,
+body.fs-mode .stealth-toolbar { display: none !important; }
+body.fs-mode .main-wrapper { min-width: 0; }
+body.fs-mode .main-content[data-page="player"] { padding: 0; overflow: hidden; }
+body.fs-mode .player-container {
+  position: fixed; inset: 0; z-index: 500;
+  max-width: none; margin: 0; padding: 0;
+  display: flex; flex-direction: column;
+  width: 100%; height: 100%; min-height: 0;
+  background: #000; overflow: hidden;
+}
+body.fs-mode .player-container > :not(.player-viewing-layout):not(.player-empty) { display: none !important; }
+body.fs-mode .player-viewing-layout { display: flex; flex: 1; min-height: 0; width: 100%; height: 100%; }
+body.fs-mode .player-viewing-layout > :not(.player-stage) { display: none !important; }
+body.fs-mode .player-stage {
+  position: relative; inset: auto; flex: 1;
+  width: 100%; height: 100%; min-height: 0;
+  max-height: none; margin: 0; border-radius: 0;
+  aspect-ratio: auto; background: #000; overflow: hidden;
+}
+body.fs-mode .player-video { width: 100%; height: 100%; object-fit: contain; }
+
+/* ══ 本仓库独有：控制条里多出来的按钮/面板（源没有这些功能） ════════════════
+   以下规则由原 PlayerControls.css 迁入；只保留源选择器覆盖不到的部分。 */
+.native-player .player-controls-options { position: relative; }
+.native-player .player-controls-menu { position: absolute; bottom: calc(100% + 12px); right: 0; width: 216px; padding: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-elevated); color: var(--text-primary); box-shadow: 0 4px 22px rgba(0, 0, 0, .22); max-height: min(70vh, 480px); overflow-y: auto; overscroll-behavior: contain; }
+.native-player .player-controls-menu label { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; }
+.native-player .player-controls-menu select { min-height: 34px; width: 82px; padding: 4px 7px; border: 1px solid var(--border-strong); border-radius: 5px; background: var(--bg-input); color: var(--text-primary); font: inherit; }
+.native-player .player-controls-menu select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.native-player .player-controls-menu > span { display: block; margin-top: 10px; color: var(--text-secondary); font-size: 11px; }
+.native-player .player-controls-menu .player-picture-mode { margin-top: 12px; }
+.native-player .player-controls-menu .player-picture-mode select { width: 100px; }
+
+/* 无障碍与降级：源没有这些规则，沿用本仓库既有约定 */
+.native-player .ctrl-btns button:disabled { opacity: .45; cursor: default; }
+.native-player .ctrl-btns button:disabled:hover { background: rgba(255, 255, 255, .12); }
+.native-player .ctrl-btns button:focus-visible,
+.native-player .ctrl-bar input:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.native-player .ctrl-bar input[type=range] { accent-color: var(--accent); }
+.native-player .ctrl-bar input:disabled { cursor: default; }
+@media (prefers-reduced-motion: reduce) {
+  .native-player .ctrl-bar { transition: none; }
+  .native-player .player-overlay .dl-pct { animation: none; }
+}
+@media (max-width: 620px) { .native-player .ctrl-btns { flex-wrap: wrap; gap: 3px; } .native-player .vol input[type=range] { width: 42px; } }
+
+/* ── 未照搬的源规则（原因见移植报告） ────────────────────────────────────────
+   .player-wrap{background|border-radius|aspect-ratio|box-shadow} —— .player-stage 已定义同类
+       属性（Player.css:365–373、593），照搬会互相覆盖，观感以本仓库舞台为准。
+   .player-wrap video{object-fit:contain} —— 本仓库画面模式（data-picture-mode）自己管
+       object-fit，照搬会破坏"保持宽度"。
+   .gesture-hint + @keyframes（源第 225–232 行）+ 源 bindTouchGestures（第 2410–2520 行）
+       —— v64 触屏手势（左滑亮度/右滑音量/双击±10s 等）。桌面 Electron 用不到，
+       且不在本次给定的移植区间（2145–2400）内。
+   .danmaku-layer / .dm-item / @keyframes dmScrollX / dmFade —— 本仓库已有
+       CommentDanmaku / OfficialDanmaku 两套弹幕实现。
+   .breadcrumb / .series-info / .ep-grid / .player-view 一族 —— 不是播放器本体。
+   .fav-btn / .cache-btn / .dl-ep-btn 一族 —— 本仓库已有对应按钮与样式。
+   ─────────────────────────────────────────────────────────────────────────── */

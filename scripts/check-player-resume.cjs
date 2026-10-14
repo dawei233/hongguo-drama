@@ -16,6 +16,10 @@ function mount({ local = false, saved = null, transcode, prepare, props = {}, ep
   const slots = [], effects = [], cleanups = [], saves = [], prepares = [], transcodes = [], cancelled = [];
   const releases = [], settingsSaved = [];
   const events = new Map(), mediaEvents = new Map(), timers = new Map();
+  // 播放器控制条的显隐机制是纯 DOM（src/components/PlayerControls.jsx:72–111），
+  // 由 Player.jsx 在全屏变化/进入播放器/卸载时调用。这里计数"调没调"，
+  // 机制本身的行为断言在 scripts/check-native-auto-hide.cjs。
+  const autoHide = { attach: 0, detach: 0 };
   const listenerOptions = new Map(), mediaCalls = { play: 0, pause: 0 };
   const document = { activeElement: null, querySelector: () => null };
   let cursor = 0, tree, timerId = 0, oldSrc = '', oldKey;
@@ -68,7 +72,7 @@ function mount({ local = false, saved = null, transcode, prepare, props = {}, ep
   const shortcutModule = { exports: {} };
   vm.runInNewContext(shortcutSource, { module: shortcutModule, exports: shortcutModule.exports, window, Event });
   const setTimer = (fn, delay) => { const id = ++timerId; timers.set(id, { fn, delay }); return id; };
-  const context = { module: { exports: {} }, require: n => n === 'react' ? react : n === './useDialogKeyboard' ? () => {} : n === '../shortcuts' ? shortcutModule.exports : n === './VideoEnhancement' ? videoEnhancementStub : n === './CommentDanmaku' ? { useCommentDanmaku: () => ({ enabled: false, settings: {}, comments: [] }) } : n === './OfficialDanmaku' ? { useOfficialDanmaku: () => ({ enabled: false, settings: {}, comments: [] }) } : n === './danmakuSource.mjs' ? { useDanmakuSource: () => 'official', writeDanmakuSource: () => {} } : {}, window, document, navigator: {}, crypto: require('node:crypto').webcrypto, setTimeout: setTimer, clearTimeout: id => timers.delete(id), setInterval: setTimer, clearInterval: id => timers.delete(id), console };
+  const context = { module: { exports: {} }, require: n => n === 'react' ? react : n === './useDialogKeyboard' ? () => {} : n === '../shortcuts' ? shortcutModule.exports : n === './VideoEnhancement' ? videoEnhancementStub : n === './CommentDanmaku' ? { useCommentDanmaku: () => ({ enabled: false, settings: {}, comments: [] }) } : n === './OfficialDanmaku' ? { useOfficialDanmaku: () => ({ enabled: false, settings: {}, comments: [] }) } : n === './danmakuSource.mjs' ? { useDanmakuSource: () => 'official', writeDanmakuSource: () => {} } : n === './PlayerControls' ? { __esModule: true, default: () => null, attachAutoHideCtrls: () => { autoHide.attach++; }, detachAutoHideCtrls: () => { autoHide.detach++; } } : {}, window, document, navigator: {}, crypto: require('node:crypto').webcrypto, setTimeout: setTimer, clearTimeout: id => timers.delete(id), setInterval: setTimer, clearInterval: id => timers.delete(id), console };
   context.exports = context.module.exports;
   vm.runInNewContext(source, context);
   const nodes = () => { const out = []; const walk = n => { if (!n || typeof n !== 'object') return; out.push(n); n.children?.forEach(walk); }; walk(tree); return out; };
@@ -98,7 +102,7 @@ function mount({ local = false, saved = null, transcode, prepare, props = {}, ep
   };
   render();
   return { props, render, flush, find, media, metadata, saves, prepares, transcodes, cancelled, events, timers, listenerOptions, mediaCalls, document, dispatchKey,
-    releases, settingsSaved,
+    releases, settingsSaved, autoHide,
     flushBatched: async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); render(); },
     transcodeProgress: payload => transcodeProgress?.(payload),
     button: label => find(n => n.type === 'button' && text(n).includes(label)),

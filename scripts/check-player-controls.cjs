@@ -13,7 +13,7 @@ const source = transformSync(fs.readFileSync(path.join(__dirname, '../src/compon
 
 (async () => {
   const slots = [], effects = [], cleanups = [], listeners = new Map(), documentListeners = new Map(), stageListeners = new Map(), windowListeners = new Map(), timers = new Map();
-  let nextTimer = 0, keyboardFocus = false, now = 0;
+  let nextTimer = 0, now = 0;
   const advance = (milliseconds = 2000) => {
     const until = now + milliseconds;
     for (;;) {
@@ -25,42 +25,58 @@ const source = transformSync(fs.readFileSync(path.join(__dirname, '../src/compon
   };
   let needsRender = false;
   let cursor = 0, tree, plays = 0, pauses = 0, fullscreenCalls = 0, selectedRate;
+  // 原生窗口全屏的退出请求（PlayerControls.jsx:158–167 的 Esc 通道）
+  const windowFullscreen = [];
   const react = {
     createElement: (type, props, ...children) => ({ type, props: props || {}, children: children.flat(Infinity) }),
     useState: initial => { const i = cursor++; if (!(i in slots)) slots[i] = typeof initial === 'function' ? initial() : initial; return [slots[i], value => { const next = typeof value === 'function' ? value(slots[i]) : value; if (!Object.is(slots[i], next)) needsRender = true; slots[i] = next; }]; },
     useRef: value => { const i = cursor++; return slots[i] ||= { current: value }; },
+    useMemo: (fn, deps) => { const i = cursor++; if (!slots[i] || deps.some((v, j) => v !== slots[i].deps[j])) slots[i] = { deps, value: fn() }; return slots[i].value; },
     useEffect: (fn, deps) => { const i = cursor++; if (!slots[i] || deps.some((v, j) => v !== slots[i][j])) { slots[i] = deps; effects.push(() => { cleanups[i]?.(); cleanups[i] = fn(); }); } },
   };
   const media = { paused: true, ended: false, currentTime: 12, duration: 100, muted: false, volume: 0.7,
     play: async () => { plays++; media.paused = false; listeners.get('play')?.(); },
     pause: () => { pauses++; media.paused = true; listeners.get('pause')?.(); },
     addEventListener: (name, fn) => listeners.set(name, fn), removeEventListener: name => listeners.delete(name) };
-  const document = { fullscreenElement: null, addEventListener: (name, fn) => documentListeners.set(name, fn), removeEventListener: name => documentListeners.delete(name), exitFullscreen: async () => { document.fullscreenElement = null; documentListeners.get('fullscreenchange')?.(); } };
-  const stage = { addEventListener: (name, fn) => stageListeners.set(name, fn), removeEventListener: name => stageListeners.delete(name), requestFullscreen: async () => { fullscreenCalls++; document.fullscreenElement = stage; documentListeners.get('fullscreenchange')?.(); } };
+  // 控制条显隐的 DOM 面：真实浏览器里始终存在，夹具补上才能观察 attach/detach 的效果
+  // （PlayerControls.jsx 的 attach/detach 用 document.body / document.querySelector）。
+  const classList = () => ({ names: new Set(),
+    add(name) { this.names.add(name); }, remove(name) { this.names.delete(name); }, contains(name) { return this.names.has(name); } });
+  const controlBar = { classList: classList() };
+  const dlText = { classList: classList() };
+  const document = { fullscreenElement: null, body: { classList: classList() },
+    querySelector: selector => (selector === '.ctrl-bar' ? controlBar : selector === '.dl-text' ? dlText : null),
+    addEventListener: (name, fn) => documentListeners.set(name, fn), removeEventListener: name => documentListeners.delete(name), exitFullscreen: async () => { document.fullscreenElement = null; documentListeners.get('fullscreenchange')?.(); } };
+  const stage = { addEventListener: (name, fn) => stageListeners.set(name, fn), removeEventListener: name => stageListeners.delete(name), getBoundingClientRect: () => ({ top: 0, left: 0 }), requestFullscreen: async () => { fullscreenCalls++; document.fullscreenElement = stage; documentListeners.get('fullscreenchange')?.(); } };
   const props = { videoRef: { current: media }, stageRef: { current: stage }, source: 'one', available: true, rate: 1, onRateChange: rate => { selectedRate = rate; } };
+  // 竖屏也走同一条原生全屏路径（旧实现里另有 windowFill 分支，已随移植删除）
   props.onToggleFullscreen = async () => {
-    if (props.portrait) fullscreenCalls++;   // 竖屏现在也走原生全屏，不再切 windowFill
-    else if (document.fullscreenElement === stage) await document.exitFullscreen();
+    if (document.fullscreenElement === stage) await document.exitFullscreen();
     else await stage.requestFullscreen();
   };
   // 音量持久化会读写 localStorage，夹具需要最小实现（真实浏览器里始终存在）
   const storage = new Map();
   const localStorage = { getItem: k => (storage.has(k) ? storage.get(k) : null), setItem: (k, v) => storage.set(k, String(v)), removeItem: k => storage.delete(k) };
-  const context = { module: { exports: {} }, document, window: { localStorage, addEventListener: (name, fn) => windowListeners.set(name, fn), removeEventListener: name => windowListeners.delete(name) }, setTimeout: (fn, delay) => { timers.set(++nextTimer, { fn, at: now + delay }); return nextTimer; }, clearTimeout: id => timers.delete(id), require: name => name === 'react' ? react : name === '../shortcuts' ? shortcutModule.exports : name === './VideoEnhancement' ? videoEnhancementStub : {} };
+  const context = { module: { exports: {} }, document, ResizeObserver: class { observe() {} disconnect() {} }, window: { localStorage, addEventListener: (name, fn) => windowListeners.set(name, fn), removeEventListener: name => windowListeners.delete(name), electronAPI: { setWindowFullscreen: value => { windowFullscreen.push(value); return Promise.resolve({ success: true }); } } }, setTimeout: (fn, delay) => { timers.set(++nextTimer, { fn, at: now + delay }); return nextTimer; }, clearTimeout: id => timers.delete(id), require: name => name === 'react' ? react : name === '../shortcuts' ? shortcutModule.exports : name === './VideoEnhancement' ? videoEnhancementStub : {} };
   context.exports = context.module.exports; vm.runInNewContext(source, context);
   const nodes = () => { const out = []; const visit = node => { if (!node || typeof node !== 'object') return; out.push(node); node.children?.forEach(visit); }; visit(tree); return out; };
   const find = label => nodes().find(node => node.props['aria-label'] === label);
   const contains = (node, target) => node === target || !!node?.children?.some(child => contains(child, target));
-  const render = () => { do { needsRender = false; cursor = 0; tree = context.module.exports.default(props); for (const node of nodes()) if (node.props.ref) node.props.ref.current = { contains: target => contains(node, target), focus() {}, querySelector: () => keyboardFocus ? {} : null }; effects.splice(0).forEach(fn => fn()); } while (needsRender); };
+  const render = () => { do { needsRender = false; cursor = 0; tree = context.module.exports.default(props); for (const node of nodes()) if (node.props.ref) node.props.ref.current = { contains: target => contains(node, target), focus() {}, querySelector: () => null, getBoundingClientRect: () => ({ top: 0, left: 0 }) }; effects.splice(0).forEach(fn => fn()); } while (needsRender); };
   render(); render();
   props.shortcuts = { ...shortcutModule.exports.DEFAULT_SHORTCUTS, play: 'shift+j', fullscreen: 'g' }; render();
   assert.equal(find('播放').props.title, '播放/暂停（Shift + J）');
   assert.equal(find('全屏').props.title, '全屏（G）');
   props.shortcuts = shortcutModule.exports.DEFAULT_SHORTCUTS; render();
-  assert.equal(find('播放进度').props.max, 100); assert.equal(find('播放进度').props.value, 12);
+  // 进度条刻度：随播放器移植改为源的 0–1000 归一化模型（源 #seek 是 max="1000"）。
+  // 这里不仅改断言值，还补上"拖动后 currentTime 必须正确"的往返验证 —— 刻度换模型后
+  // 最容易坏的就是换算，只断言 max/value 抓不到。
+  assert.equal(Number(find('播放进度').props.max), 1000, '刻度改为 0–1000');
+  assert.equal(find('播放进度').props.value, 120, 'currentTime=12 / duration=100 应归一化为 120');
   await find('播放').props.onClick(); render(); assert.equal(plays, 1); assert.ok(find('暂停'));
   find('暂停').props.onClick(); render(); assert.equal(pauses, 1);
-  find('播放进度').props.onChange({ target: { value: '37.5' } }); assert.equal(media.currentTime, 37.5);
+  find('播放进度').props.onChange({ target: { value: '375' } });
+  assert.equal(media.currentTime, 37.5, '拖动到 375/1000 应换算成 37.5 秒');
   find('静音').props.onClick(); listeners.get('volumechange')?.(); render(); assert.equal(media.muted, true); assert.ok(find('取消静音'));
   find('音量').props.onChange({ target: { value: '0.4' } }); assert.equal(media.volume, 0.4); assert.equal(media.muted, false);
   // 音量持久化（用户反馈"重进立马最大声音"）：改动应写入 localStorage，且换集后重新套用。
@@ -90,159 +106,87 @@ const source = transformSync(fs.readFileSync(path.join(__dirname, '../src/compon
   documentListeners.get('keydown')({ key: 'Escape', preventDefault() {}, stopPropagation() {} }); render(); assert.equal(find('播放速度'), undefined);
   find('更多播放选项').props.onClick(); render(); documentListeners.get('pointerdown')({ target: {} }); render(); assert.equal(find('播放速度'), undefined);
   await find('全屏').props.onClick(); render(); assert.equal(fullscreenCalls, 1); assert.ok(find('退出全屏'));
-  await find('播放').props.onClick(); render(); advance(); render();
-  const hidden = () => tree.props.className.includes('controls-hidden');
-  let pointerX = 100;
-  const movePointer = (delta = 1) => { pointerX += delta; stageListeners.get('pointermove')({ screenX: pointerX, screenY: 100, movementX: delta, movementY: 0 }); render(); };
-  assert.ok(hidden(), 'playing in landscape fullscreen must hide idle controls');
+  // ── 自动隐藏控制条（新机制）────────────────────────────────────────────────
+  // 移植前本节有 55 处 `hidden()` 断言，读的是 React 状态 `controlsHidden` →
+  // 控制条根元素上的 `.controls-hidden` → `opacity:0`（见 git HEAD 版本）。
+  // 移植后显隐是纯 DOM + CSS：`attachAutoHideCtrls()` 给 `.ctrl-bar` / `.dl-text` 加
+  // `.fs-show`、3 秒无操作移除（PlayerControls.jsx:99–115），由 Player.jsx 在全屏
+  // 变化时调用（Player.jsx:828/852/861/869）。**组件自身不再持有显隐状态**，所以
+  // 原先那些"React 状态机"断言（暂停/菜单/拖动/焦点/快捷键白名单/静止指针/换源/
+  // 竖屏守卫）没有等价物，已删除 —— 逐条清单见报告。
+  // 机制本身（监听绑定、幂等、悬挂定时器、hold 计数）在
+  // scripts/check-native-auto-hide.cjs 里断言；下面只断言本文件能观察到的部分：
+  // 把机制显式挂上之后，用户在控制条上看到的效果。
+  const { attachAutoHideCtrls, detachAutoHideCtrls } = context.module.exports;
+  const barShown = () => controlBar.classList.contains('fs-show');
+  const dlShown = () => dlText.classList.contains('fs-show');
   const keyTarget = { closest: () => null };
-  const keyboard = (type, key, extra = {}) => {
-    const event = { type, key, code: key.length === 1 ? `Key${key.toUpperCase()}` : key, target: keyTarget, defaultPrevented: false, ...extra };
-    windowListeners.get(type)?.(event); render();
-  };
-  for (const custom of [false, true]) {
-    props.shortcuts = { ...shortcutModule.exports.DEFAULT_SHORTCUTS, ...(custom ? { previous: 'shift+j', next: 'shift+k' } : {}) }; render();
-    for (const key of custom ? ['j', 'k'] : ['ArrowUp', 'ArrowDown']) {
-      for (const defaultPrevented of [false, true]) {
-        advance(); render(); assert.ok(hidden());
-        keyboard('keydown', key, { shiftKey: custom, defaultPrevented });
-        assert.ok(hidden(), `${key} keydown preserves hidden controls regardless of parent listener order`);
-        keyboard('keydown', key, { shiftKey: custom, repeat: true, defaultPrevented });
-        assert.ok(hidden(), `${key} repeat must not reveal controls`);
-        props.continuing = true; props.available = false; media.pause(); render();
-        assert.ok(hidden(), `${key} reset and preparation preserve hidden controls`);
-        if (custom) keyboard('keyup', 'Shift');
-        keyboard('keyup', key, { shiftKey: false, defaultPrevented });
-        assert.ok(hidden(), `${key} keyup preserves hidden controls even after Shift is released`);
-        props.source += '-keyboard'; props.available = true; listeners.get('emptied')?.(); render();
-        assert.ok(hidden(), `${key} source replacement preserves hidden controls`);
-        listeners.get('loadedmetadata')?.(); render();
-        assert.ok(hidden(), `${key} metadata preserves hidden controls before playing`);
-        await media.play(); props.continuing = false; render();
-        assert.ok(hidden(), `${key} playing preserves hidden controls`);
-        keyboard('keydown', key, { shiftKey: custom, defaultPrevented });
-        props.continuing = true; props.available = false; media.pause(); render();
-        props.source += '-held'; props.available = true; render();
-        await media.play(); props.continuing = false; render();
-        keyboard('keyup', key, { shiftKey: custom, defaultPrevented });
-        if (custom) keyboard('keyup', 'Shift');
-        assert.ok(hidden(), `${key} release after playing and later Shift release preserve hidden controls`);
-      }
-    }
-  }
-  props.shortcuts = shortcutModule.exports.DEFAULT_SHORTCUTS; render();
-  movePointer();
-  keyboard('keydown', 'ArrowDown'); keyboard('keyup', 'ArrowDown');
-  assert.ok(!hidden(), 'visible controls remain visible after an episode shortcut');
-  advance(); render();
-  keyboard('keydown', 'ArrowDown', { target: { closest: query => query.includes('[data-player-menu]') ? {} : null } });
-  assert.ok(!hidden(), 'menu input navigation still reveals and retains controls');
-  advance(); render();
-  keyboard('keydown', 'ArrowDown', { ctrlKey: true });
-  assert.ok(!hidden(), 'modified system keys keep ordinary reveal behavior');
-  advance(); render();
-  keyboard('keydown', ' '); media.pause(); render();
-  assert.ok(!hidden(), 'intentional keyboard pause reveals controls');
-  await media.play(); render(); advance(); render();
-  keyboard('keydown', 'ArrowDown'); props.continuing = true; props.available = false; media.pause(); render();
-  props.continuing = false; render();
-  assert.ok(!hidden(), 'failed shortcut preparation restores controls');
-  props.available = true; await media.play(); render(); advance(); render();
-  keyboard('keyup', 'ArrowDown');
-
-  // Replay previous -> playback -> natural end -> automatic next, including native event churn.
-  props.autoContinue = true; render(); movePointer(); advance(); render();
-  keyboard('keydown', 'ArrowUp');
-  props.continuing = true; props.available = false; media.pause(); render();
-  keyboard('keyup', 'ArrowUp');
-  movePointer(0);
-  assert.ok(hidden(), 'stationary pointer events during previous-episode handoff must not reveal controls');
-  stageListeners.get('focusin')({ target: media }); stageListeners.get('focusout')({ target: media }); render();
-  assert.ok(hidden(), 'video focus churn during previous-episode handoff must preserve hidden controls');
-  props.source = 'previous-after-up'; props.available = true; media.ended = false;
-  listeners.get('emptied')?.(); listeners.get('loadedmetadata')?.(); render();
-  await media.play(); props.continuing = false; render();
-  keyboard('keyup', 'ArrowUp'); stageListeners.get('focusin')({ target: media }); render();
-  assert.ok(hidden(), 'previous episode starts with controls hidden');
-  media.pause(); render(); advance(60); render();
-  assert.ok(hidden(), 'pause arriving just before ended must not flash controls');
-  media.ended = true; listeners.get('ended')?.(); render();
-  props.continuing = true; props.available = false; render();
-  movePointer(0); stageListeners.get('focusin')({ target: media }); render();
-  props.source = 'next-after-previous'; props.available = true; media.ended = false;
-  listeners.get('emptied')?.(); listeners.get('loadedmetadata')?.(); render();
-  await media.play(); props.continuing = false; render(); advance(200); render();
-  assert.ok(hidden(), 'automatic next after previous preserves hidden controls and cancels delayed pause reveal');
-  movePointer(); assert.ok(!hidden(), 'real pointer movement still reveals controls'); advance(); render();
-  props.continuing = true; render(); movePointer();
-  assert.ok(!hidden(), 'real pointer movement during a handoff still reveals controls'); advance(); render();
-  stageListeners.get('pointerdown')({ target: media }); render();
-  assert.ok(!hidden(), 'clicking the video during a handoff reveals controls'); advance(); render();
-  keyboardFocus = true; keyboard('keydown', 'Tab');
-  stageListeners.get('focusin')({ target: find('暂停') }); render(); advance(); render();
-  assert.ok(!hidden(), 'Tab focus on a control stays visible throughout a handoff');
-  keyboardFocus = false; props.continuing = false; render(); advance(); render();
-  stageListeners.get('focusin')({ target: find('暂停') }); render();
-  assert.ok(!hidden(), 'programmatic focus on a control remains accessible'); advance(); render();
-  keyboard('keydown', ' '); media.pause(); render();
-  assert.ok(!hidden(), 'intentional keyboard pause is immediately visible even with auto-next');
-  await media.play(); render(); advance(); render(); media.pause(); render();
-  stageListeners.get('focusin')({ target: media }); stageListeners.get('focusout')({ target: media }); render();
-  advance(200); render();
-  assert.ok(!hidden(), 'persistent external pause reveals controls after the short event-settling delay');
-  await media.play(); render(); advance(); render();
-
-  props.autoContinue = true; render();
-  media.ended = true; media.pause(); render();
-  assert.ok(hidden(), 'end-of-episode pause before ended must not reveal controls when auto-next is available');
-  props.continuing = true; props.autoContinue = false; props.available = false; render();
-  assert.ok(hidden(), 'online preparation must retain hidden controls, including transition into the final episode');
-  props.source = 'two'; props.available = true; media.ended = false;
-  listeners.get('emptied')?.(); render();
-  assert.ok(hidden(), 'loading the next source must not reveal controls');
-  listeners.get('loadedmetadata')?.(); render();
-  assert.ok(hidden(), 'metadata while paused must not reveal controls during auto-next');
-  await media.play(); props.continuing = false; render();
-  assert.ok(hidden(), 'starting the next episode must retain hidden controls');
-  movePointer(); assert.ok(!hidden(), 'moving the pointer reveals controls');
-  advance(); render(); assert.ok(hidden());
-  media.ended = true; media.pause(); render();
-  assert.ok(!hidden(), 'last episode or disabled auto-next restores controls at the end');
-  media.ended = false; await media.play(); render(); advance(); render();
-  media.pause(); render(); assert.ok(!hidden(), 'pausing keeps controls visible');
-  await media.play(); render();
-  find('更多播放选项').props.onClick(); render(); advance(); render(); assert.ok(!hidden(), 'open menu prevents hiding');
+  await find('退出全屏').props.onClick(); render(); render();
+  assert.equal(document.fullscreenElement, null, '再点一次必须退出全屏');
+  assert.ok(find('全屏'), '退出全屏后按钮回到「全屏」');
+  // 等价旧断言「playing in landscape fullscreen must hide idle controls」：
+  // 全屏挂上机制后，3 秒无操作即隐藏（旧实现是 2000ms 的 React 定时器）。
+  attachAutoHideCtrls();
+  assert.ok(barShown() && dlShown(), '进入全屏（attach）后控制条与下载进度条必须显示');
+  advance(3000);
+  assert.ok(!barShown() && !dlShown(), '全屏下 3 秒无操作必须隐藏控制条与进度条');
+  // 等价旧断言「real pointer movement / clicking the video reveals controls」：
+  // 任一活动事件重新显示。keydown 的绑定在 check-native-auto-hide.cjs 里断言 ——
+  // 本夹具的 document 监听表是"一个事件名一个处理函数"，菜单打开时会覆盖 keydown，
+  // 用它断言会读到菜单的 Esc 处理器而不是 autohide 的 show()。
+  documentListeners.get('mousemove')({});
+  assert.ok(barShown() && dlShown(), '鼠标移动必须重新显示控制条');
+  advance(3000); assert.ok(!barShown());
+  documentListeners.get('wheel')({});
+  assert.ok(barShown(), '滚轮活动必须重新显示控制条');
+  advance(3000); assert.ok(!barShown());
+  documentListeners.get('mousedown')({});
+  assert.ok(barShown(), '按住鼠标必须重新显示控制条');
+  // 等价旧断言「open menu prevents hiding」：控制条内的弹出面板打开期间不得隐藏
+  // （移植后新增的例外，源实现没有；理由是面板是 .ctrl-bar 的后代，整条隐藏会让
+  // 面板既看不见又点不动 —— 见报告「疑似产品缺陷」一节）。
+  assert.ok(find('更多播放选项'), '控制条必须有「更多播放选项」面板入口');
   find('更多播放选项').props.onClick(); render();
-  stageListeners.get('pointerdown')({ target: { closest: () => ({}) } }); advance(); render(); assert.ok(!hidden(), 'dragging prevents hiding');
-  windowListeners.get('pointerup')(); advance(); render(); assert.ok(hidden(), 'releasing the slider restarts hiding');
-  keyboardFocus = true; stageListeners.get('focusin')({ target: find('暂停') }); advance(); render(); assert.ok(!hidden(), 'keyboard focus remains visible');
-  keyboardFocus = false; stageListeners.get('focusout')(); advance(); render(); assert.ok(hidden());
-  await find('退出全屏').props.onClick(); render(); render(); assert.equal(document.fullscreenElement, null);
-  advance(); render(); assert.ok(hidden(), 'normal landscape must hide idle controls after exiting fullscreen');
-  movePointer(); assert.ok(!hidden(), 'normal landscape movement reveals controls');
-  windowListeners.get('blur')(); advance(); render(); assert.ok(hidden(), 'normal landscape hides with the pointer outside the app');
-  media.pause(); render(); assert.ok(!hidden(), 'normal landscape pause stays accessible');
-  await media.play(); render();
-  find('更多播放选项').props.onClick(); render(); advance(); render(); assert.ok(!hidden(), 'normal landscape menu stays visible');
+  assert.ok(barShown(), '打开面板必须立刻显示控制条');
+  advance(10000);
+  assert.ok(barShown(), '「更多播放选项」打开期间无论多久都不得隐藏');
+  assert.ok(find('播放速度'), '面板内容在打开期间必须仍然存在');
   find('更多播放选项').props.onClick(); render();
-  stageListeners.get('pointerdown')({ target: { closest: () => ({}) } }); advance(); render(); assert.ok(!hidden(), 'normal landscape slider drag stays visible');
-  windowListeners.get('pointerup')(); advance(); render(); assert.ok(hidden(), 'normal landscape release resumes hiding');
-  keyboardFocus = true; stageListeners.get('focusin')({ target: find('暂停') }); advance(); render(); assert.ok(!hidden(), 'normal landscape keyboard focus stays visible');
-  keyboardFocus = false; stageListeners.get('focusout')(); advance(); render(); assert.ok(hidden());
-  props.portrait = true; render(); advance(); render(); assert.ok(hidden(), 'portrait retains auto-hide');
-  // 竖屏全屏现在是原生窗口全屏（由 App 传 nativeFullscreen 下来），不再是 windowFill
+  advance(2999); assert.ok(barShown(), '关闭面板后重新开始 3 秒计时');
+  advance(1); assert.ok(!barShown(), '关闭面板后 3 秒无操作必须隐藏');
+  // 弹幕设置面板走同一个 panelOpen 判据（menuOpen || danmakuOpen || qualityOpen）
+  props.danmaku = { enabled: true, supported: true, toggle() {} }; render();
+  find('弹幕设置').props.onClick(); render();
+  advance(10000);
+  assert.ok(barShown(), '弹幕设置面板打开期间无论多久都不得隐藏');
+  find('弹幕设置').props.onClick(); render();
+  advance(3000); assert.ok(!barShown(), '关闭弹幕设置面板后恢复 3 秒自动隐藏');
+  delete props.danmaku; render();
+  detachAutoHideCtrls();
+  assert.ok(!barShown() && !dlShown(), 'detach 必须清掉 fs-show');
+  // 原生窗口全屏不会自己响应 Esc（源 index.html 里没有这段，是本仓库的必要补充，
+  // 见 PlayerControls.jsx:189–200）。旧断言只把 nativeFullscreen 当作驱动自动隐藏的
+  // 开关；移植后该 prop 在场内唯一的行为就是这条 Esc 通道，故改为对它断言。
   props.nativeFullscreen = true; render();
-  movePointer(); assert.ok(!hidden()); advance(); render(); assert.ok(hidden(), 'portrait fullscreen auto-hides');
-  props.continuing = true; props.available = false; media.pause(); render();
-  assert.ok(hidden(), 'window fill keeps controls hidden while auto-next prepares');
-  props.continuing = false; props.autoContinue = true; media.ended = true; listeners.get('ended')?.(); render();
-  assert.ok(!hidden(), 'failed auto-next restores controls even when the retained frame ended and later episodes exist');
-  props.available = false; render(); render(); assert.ok(!hidden(), 'unavailable media keeps controls visible');
-  media.pause(); render();
+  assert.ok(find('退出全屏'), '原生全屏下按钮必须显示为「退出全屏」（expanded = fullscreen || nativeFullscreen）');
+  assert.equal(typeof windowListeners.get('keydown'), 'function', '原生全屏下必须注册 Esc 退出全屏通道（PlayerControls.jsx:158–167）');
+  windowListeners.get('keydown')({ key: 'Escape', target: keyTarget, defaultPrevented: false });
+  assert.deepEqual(windowFullscreen, [false], '原生全屏下按 Esc 必须请求退出窗口全屏');
+  windowListeners.get('keydown')({ key: 'Escape', target: { closest: query => (query.includes('.danmaku-settings') ? {} : null) }, defaultPrevented: false });
+  assert.deepEqual(windowFullscreen, [false], '弹幕设置面板打开时 Esc 必须先关面板，不得退出全屏');
+  windowListeners.get('keydown')({ key: 'ArrowDown', target: keyTarget, defaultPrevented: false });
+  assert.deepEqual(windowFullscreen, [false], '其他按键不得触发退出全屏');
+  props.nativeFullscreen = false; render();
+  assert.ok(find('全屏'), '退出原生全屏后按钮回到「全屏」');
+  // 组件自身不得再起自动隐藏定时器：定时器只归 attachAutoHideCtrls()。
+  // 反面例子正是被删掉的旧机制（组件内的 2000ms setTimeout）。
+  render(); advance(5000); render();
+  assert.equal(timers.size, 0, '控制条组件自身不得创建自动隐藏定时器（机制已交给 attachAutoHideCtrls）');
 
   media.duration = NaN; listeners.get('durationchange')(); render(); assert.equal(find('播放进度').props.disabled, true);
   props.available = false; render(); assert.equal(find('播放').props.disabled, true);
-  cleanups.forEach(fn => fn?.()); assert.equal(listeners.size, 0); assert.equal(documentListeners.size, 0); assert.equal(stageListeners.size, 0); assert.equal(windowListeners.size, 0); assert.equal(timers.size, 0);
+  cleanups.forEach(fn => fn?.()); assert.equal(listeners.size, 0); assert.equal(documentListeners.size, 0); assert.equal(windowListeners.size, 0); assert.equal(timers.size, 0);
+  assert.equal(stageListeners.size, 0, '控制条不得再把显隐监听绑到 stage 上（移植后只绑 document，见 check-native-auto-hide.cjs）');
   const { mount } = require('./check-player-resume.cjs');
   const controls = ui => ui.find(node => node.props.onRateChange && node.props.videoRef);
   for (const local of [true, false]) {
@@ -321,5 +265,25 @@ const source = transformSync(fs.readFileSync(path.join(__dirname, '../src/compon
     assert.equal(controls(blocked).props.continuing, false, 'autoplay rejection must leave the play control accessible');
     blocked.unmount();
   }
-  console.log('PASS video controls: previous-to-auto-next continuity with stationary-pointer/video-focus/early-pause events; real movement/click/Tab/focused-control/manual-pause access; persistent-pause recovery; default/custom previous/next keydown/keyup/reset/preparation/source/metadata/playing, local/online shortcut matrix, input/menu boundaries, play/pause, seek, volume, lower-right 4× menu, fullscreen idle/reveal, auto-next pause/preparing/source/metadata/play continuity, local/online parent wiring, failure/end recovery, pause/menu/drag/focus guards, portrait and exit cleanup');
+  // ── 控制条显隐的接线（移植机制的入口，本仓库曾经的"全屏丢失控制条"）──────────
+  // 机制本身（attach/detach 的 DOM+CSS 行为）在 scripts/check-native-auto-hide.cjs 里断言；
+  // 这里断言 Player.jsx 真的在正确时机调用它 —— 单测那五个用例在接线断掉时仍会全绿。
+  {
+    let broadcast = null;
+    const ui = mount({ props: { setEpisodesOpen() {}, active: true, nativeFullscreen: true, target: { seriesId: 'A', vidIndex: 1, ts: 1 } },
+      apiOverrides: { onWindowFullscreenChanged: fn => { broadcast = fn; return () => { broadcast = null; }; } } });
+    await ui.flush();
+    assert.ok(ui.autoHide.attach > 0, '进入原生全屏必须挂上自动隐藏（attachAutoHideCtrls）');
+    assert.equal(typeof broadcast, 'function', '播放器必须订阅主进程的全屏变化广播（源第二处调用点）');
+    const attached = ui.autoHide.attach, detached = ui.autoHide.detach;
+    broadcast(false); await ui.flush();
+    assert.ok(ui.autoHide.detach > detached, '主进程广播退出全屏必须摘掉自动隐藏');
+    broadcast(true); await ui.flush();
+    assert.ok(ui.autoHide.attach > attached, '主进程广播进入全屏必须重新挂上自动隐藏');
+    const beforeUnmount = ui.autoHide.detach;
+    ui.unmount();
+    assert.equal(broadcast, null, '卸载必须退订主进程的全屏广播');
+    assert.ok(ui.autoHide.detach > beforeUnmount, '离开播放器必须摘掉自动隐藏，不留定时器与 document 监听');
+  }
+  console.log('PASS video controls: source 0–1000 seek scale with drag round-trip, play/pause, volume with persistence, lower-right 4× menu (Escape/outside close), fullscreen enter/exit with shortcut tooltips, native-fullscreen Escape channel incl. danmaku-panel guard, no component-owned auto-hide timer, local/online parent wiring for fullscreen/shortcut/continuing transitions, input/menu shortcut boundaries, failure/end recovery, and the fullscreen→attachAutoHideCtrls wiring; control-bar hide/show behavior itself is covered by scripts/check-native-auto-hide.cjs');
 })().catch(error => { console.error(error); process.exitCode = 1; });

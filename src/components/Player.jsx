@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import useDialogKeyboard from './useDialogKeyboard';
-import PlayerControls from './PlayerControls';
+import PlayerControls, { attachAutoHideCtrls, detachAutoHideCtrls } from './PlayerControls';
+import NativePlayerOverlay from './NativePlayerOverlay';
 import CommentDanmaku, { useCommentDanmaku } from './CommentDanmaku';
 import OfficialDanmaku, { useOfficialDanmaku } from './OfficialDanmaku';
 import { useDanmakuSource, writeDanmakuSource } from './danmakuSource.mjs';
@@ -808,20 +809,66 @@ function Player({ target, onNavigate, onSeriesSelected, nativeFullscreen = false
     if (pendingAutoplayRef.current) v.play().catch(() => { if (playbackVersion === mediaVersion.current) setAutoAdvancing(false); });
   };
 
+  // ── 全屏：逐字转写自源 index.html 第 2150–2170 行的 toggleFullscreen() ──────
+  // 源优先走 Electron 原生窗口全屏（`window.hgFs.toggle()`），并把结果落到
+  // `document.body.classList.toggle('fs-mode', !!fs)`；没有 hgFs 才退回 HTML5
+  // 元素全屏。这里把 `window.hgFs` 换成本仓库的 `window.electronAPI`
+  // （`toggle()` → `setWindowFullscreen(!nativeFullscreen)`）。
+  // 注意：改造前横屏走的是 DOM 全屏、竖屏才走原生全屏 —— 这种"横竖不一致"
+  // 正是源要消灭的东西，所以现在两种布局统一走原生全屏 + body.fs-mode。
   const toggleFullscreen = useCallback(async () => {
+    // 本仓库既有约束：隐身小窗是另一套窗口形态，不允许全屏
     if (document.querySelector('.stealth-mode')) { showToast('请先退出隐身小窗'); return; }
+    if (window.electronAPI?.setWindowFullscreen) {
+      try {
+        const result = await window.electronAPI.setWindowFullscreen(!nativeFullscreen);
+        if (!result?.success) { showToast(result?.error || '无法进入或退出全屏，请重试'); return; }
+        const fs = !nativeFullscreen;
+        document.body?.classList?.toggle('fs-mode', !!fs);
+        if (fs) attachAutoHideCtrls(); else detachAutoHideCtrls();
+      } catch { showToast('无法进入或退出全屏，请重试'); }
+      return;
+    }
+    // 兼容：HTML5 元素全屏 fallback（源的 $('player-wrap') → 本仓库的 .player-stage）
+    const el = stageRef.current;
     try {
-      if (portrait) {
-        // 竖屏改用 Electron 原生窗口全屏（以前只是加个 CSS 类填满窗口，窗口并没有真进全屏）。
-        // 状态由 App 持有；这里只发指令，结果经 window-fullscreen-changed 广播回来。
-        const result = await window.electronAPI?.setWindowFullscreen?.(!nativeFullscreen);
-        if (!result?.success) throw new Error(result?.error || '全屏切换失败');
-        return;
-      }
-      if (document.fullscreenElement === stageRef.current) await document.exitFullscreen();
-      else await stageRef.current?.requestFullscreen();
-    } catch { showToast('无法进入或退出全屏，请重试'); }
-  }, [portrait, nativeFullscreen, showToast]);
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else if (el?.requestFullscreen) await el.requestFullscreen();
+      else if (el?.webkitRequestFullscreen) el.webkitRequestFullscreen();
+      else showToast('当前环境不支持全屏');
+    } catch { showToast('当前环境不支持全屏'); }
+  }, [nativeFullscreen, showToast]);
+
+  // ── body.fs-mode 的生命周期 ────────────────────────────────────────────────
+  // 源第 2173–2179 行：监听主进程原生全屏变化（Alt+Enter / F11 / 菜单触发也会同步过来），
+  // 同步 body.fs-mode，并在全屏且处于播放器页时起停"3 秒自动隐藏控制条"。
+  // 本仓库 App 也订阅了同一事件（用于 .player-fullscreen 布局），两者互不冲突；
+  // 这里保留源那样的独立订阅，避免依赖 App 的中转时机。
+  const activeRef = useRef(active);
+  activeRef.current = active;
+  useEffect(() => {
+    const unsubscribe = window.electronAPI?.onWindowFullscreenChanged?.((fs) => {
+      document.body?.classList?.toggle('fs-mode', !!fs);
+      if (fs && activeRef.current) attachAutoHideCtrls();
+      else detachAutoHideCtrls();
+    });
+    return () => {
+      if (typeof unsubscribe === 'function') unsubscribe();
+      // 源 showSearch()（第 2726–2729 行）：离开播放器视图要释放隐藏逻辑。
+      // 真正退出窗口全屏由 App 负责（App.jsx 的 navigate / exitPlayerFullscreen），
+      // 这里只清理挂在 document.body 上的类，避免两处争抢窗口状态。
+      document.body?.classList?.remove('fs-mode');
+      detachAutoHideCtrls();
+    };
+  }, []);
+  // 二重保险：跟随本仓库自己的 nativeFullscreen / active。
+  // 源是单页应用、`playerViewActive` 是模块级全局（第 1865 行"进入播放器且已全屏→attach"），
+  // React 里对应这两个 prop。
+  useEffect(() => {
+    document.body?.classList?.toggle('fs-mode', !!(active && nativeFullscreen));
+    if (active && nativeFullscreen) attachAutoHideCtrls();
+    else detachAutoHideCtrls();
+  }, [active, nativeFullscreen]);
 
   // Capture handled keys before media controls; cancel keyup too so focused buttons cannot toggle twice.
   useEffect(() => {
@@ -1355,7 +1402,7 @@ function Player({ target, onNavigate, onSeriesSelected, nativeFullscreen = false
 
       <div className="player-viewing-layout">
       {/* 播放区 */}
-      <div className="player-stage" data-picture-mode={pictureMode} ref={stageRef}>
+      <div className="player-stage native-player" data-picture-mode={pictureMode} ref={stageRef}>
           <video
             ref={videoRef}
             crossOrigin="anonymous"
@@ -1419,8 +1466,19 @@ function Player({ target, onNavigate, onSeriesSelected, nativeFullscreen = false
         {danmakuSource === 'official'
           ? <OfficialDanmaku videoRef={videoRef} source={videoSrc} available={canPlay && active} danmaku={danmaku} />
           : <CommentDanmaku videoRef={videoRef} source={videoSrc} available={canPlay && active} danmaku={danmaku} />}
+        {/* 准备/下载/缓冲覆盖层 —— 逐字移植自源 index.html 第 615–628 行
+            （#overlay 一族 + #dl-bar 一族）。它自己独立订阅 onOnlinePlayProgress，
+            并直接听 video 的 waiting/playing，不依赖 Player.jsx:403-416 那个
+            监听器（那处在 request.prepared 之后会把后续进度事件全部丢弃）。
+            见 NativePlayerOverlay.jsx 顶部说明。 */}
+        <NativePlayerOverlay videoRef={videoRef} available={canPlay && active} seriesId={String(activeSeriesId || '')} vidIndex={currentIndex} onRetry={retryPlayback} />
         <PlayerControls danmaku={showDanmakuControls ? danmaku : null} danmakuSource={danmakuSource} onDanmakuSourceChange={writeDanmakuSource} enhancement={enhancement} continuing={autoAdvancing && !playbackError && !decodeFailed} autoContinue={autoNext && !!findNext(currentIndex)} shortcuts={shortcuts} onToggleFullscreen={toggleFullscreen} portrait={portrait} nativeFullscreen={nativeFullscreen} videoRef={videoRef} stageRef={stageRef} source={videoSrc} available={canPlay}
-          pictureMode={pictureMode} onPictureModeChange={changePictureMode} rate={playbackRate} onRateChange={changePlaybackRate} onError={showToast} />
+          pictureMode={pictureMode} onPictureModeChange={changePictureMode} rate={playbackRate} onRateChange={changePlaybackRate} onError={showToast}
+          autoNext={autoNext} onToggleAutoNext={setAutoNext}
+          position={Math.max(0, episodes.findIndex((ep) => ep.vid_index === currentIndex) + 1)} episodeCount={episodes.length}
+          onPreviousEpisode={() => { const episode = findPrev(currentIndex); if (episode) { goToEpisode(episode.vid_index); setAutoAdvancing(true); } else showToast('已经是第一集'); }}
+          onNextEpisode={() => { const episode = findNext(currentIndex); if (episode) { goToEpisode(episode.vid_index); setAutoAdvancing(true); } else showToast('已经是最后一集'); }}
+          canPrevious={!!findPrev(currentIndex)} canNext={!!findNext(currentIndex)} />
         {!canPlay && (
           <div className="player-placeholder" style={{ position: 'absolute', inset: 0 }}>
             {playbackError ? (
@@ -1493,12 +1551,10 @@ function Player({ target, onNavigate, onSeriesSelected, nativeFullscreen = false
           </div>
         )}
 
-        {canPlay && mediaBuffering && !compatProgress && (
-          <div className="compat-overlay" role="status">
-            <RefreshCw size={26} className="spin" /><p>正在加载视频…</p>
-            <button className="btn btn-outline" onClick={() => stopPlayback()}>取消播放</button>
-          </div>
-        )}
+        {/* 原来的 ② 缓冲浮层（canPlay && mediaBuffering && !compatProgress）已移除，
+            改由上面移植的 .player-overlay 承担 —— 两者都是 position:absolute; inset:0，
+            同时渲染会叠在一起。代价：源的这个浮层没有"取消播放"按钮，因此这里少了一个
+            操作入口（见移植报告的"丢失的能力"）。mediaBuffering 仍用于 aria-busy。 */}
 
         {/* 兼容模式浮层：解码失败提示 / 转码进度 */}
         {compatProgress && compatProgress.vidIndex === currentIndex && (

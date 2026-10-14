@@ -235,3 +235,114 @@ if (portrait) { setWindowFill(fill => !fill); return; }   // 只加个 CSS 类
 数据**。特别地，用户在 1.72.9 上反馈"还是没修复"时，测试的是**旧实现**（竖屏只有 CSS 填充、
 横屏 DOM 全屏）；本轮换成竖屏原生全屏后，原来的现象路径已改变，需重新确认。
 若新实现下仍出现"控制条能点但看不见"，§7 的诊断方案（尤其是 rAF 计数）可直接沿用。
+
+---
+
+## 十、决定转向：原样移植用户的播放器（2026-10-14 深夜）
+
+用户明确指示：
+
+> 「不止播放链。还有前台播放器。全屏丢失控制条的问题。现在版本的实现确实不行，
+> 直接把我的切过来装进去。」
+
+**范围经用户确认为「只换播放器」**：移植播放器 UI/交互 + 播放链，
+**保留**本仓库其余功能（下载管理、弹幕、观看历史、设置、更新、CI 发布），**不引入 Python 运行时**。
+
+### 为什么这次不再"自研"
+
+前十节的结论是：我在无法本地复现的前提下反复重构控制条显隐与全屏实现，五轮无效。
+用户自有项目（`dawei233/hongguo-monorepo` 的 `pc/`）在同一台机器、同一双屏环境下工作正常，
+**照搬其已验证实现**比继续推测成本更低、也更可能一次到位。
+
+### 对照后确认的两处关键技术差异
+
+**1. 控制条显隐（源实现更稳，必须照搬）**
+
+```css
+.ctrl-bar { opacity:0; transition:opacity .25s; pointer-events:none; }
+.player-wrap:hover .ctrl-bar, .ctrl-bar.show { opacity:1; pointer-events:auto; }
+/* 全屏：主动禁用 hover，只允许 .fs-show 显示，且 !important 压过一切 */
+body.fs-mode .ctrl-bar { opacity:0; pointer-events:none; }
+body.fs-mode .player-wrap:hover .ctrl-bar { opacity:0; pointer-events:none; }
+body.fs-mode .ctrl-bar.fs-show { opacity:1 !important; pointer-events:auto !important; }
+```
+
+JS 侧：`mousemove/keydown/wheel/mousedown` **全绑在 `document`**，任一活动即加 `.fs-show`，
+3 秒无操作移除；`body.fs-mode` 由 Electron 原生全屏切换驱动。
+本仓库原先由 React `controlsHidden` 状态驱动 `opacity`，**这正是被替换掉的部分**。
+
+**2. 起播快（根因是数据要跑三遍）**
+
+本仓库加密 App 片源原路径：整集下载到临时文件 → `-movflags +faststart` 整集解密 remux
+（**+faststart 必须写完整个文件才能前置 moov**）→ 整个文件读进内存 → 才能供给播放。
+
+源实现：让 ffmpeg 直接读远端 URL、一边解密一边写**分片 MP4**
+（`-movflags frag_keyframe+empty_moov+default_base_moof`），写到约 21MB / 2 秒即可起播；
+Chromium 把「200 + chunked + 无 Content-Length / 无 Range」判定为流式源边到边播。
+
+已在 `src/native/progressive-media.js` 实现这两件事并配单元测试
+（`createDecryptStream` / `createGrowingFileStream`）。
+
+### 渲染层消费地图与必须先处理的既有契约
+
+新增 `docs/research/renderer-playback-consumption.md`（421 行）记录了改造风险，其中三条必须先解决：
+
+- **R3**：起播早期的 media error（2/4）会被 `Player.jsx:1394-1416` 误判成"片源不可用"，
+  进而强制重取源甚至走整集下载兜底；这条链被 `scripts/check-player-fallback.cjs:100-107` 固化为契约。
+- **R9**：兼容模式（HEVC→H.264）直接把在线条目的 `.filePath`/`.buffer` 当 ffmpeg 输入
+  （`main.js:2452-2464`），改成"增长中的分片文件"会让它拿到半成品。
+- **R12**：写完之前不得把条目登记进 `onlineCache`，否则第二次播放会拿到残缺文件且无校验兜底。
+
+另有一条护栏早已失效，改造前应先修：
+
+- **R14**：`src/components/check-ui-state.cjs` 在本仓库 HEAD 上是 **31 条测试 30 条 FAIL**，
+  根因是它的沙箱 `require` 桩没跟上 `Player.jsx` 新增的导入
+  （`./VideoEnhancement`、`./danmakuSource.mjs` 等）。它保护的正是"迟到的 prepare 结果不得覆盖新集"，
+  与本次改造直接相关。该脚本未被任何 CI 或其它脚本引用。
+
+---
+
+## 十一、移植落地（2026-10-14 深夜）
+
+### 已落地
+
+**播放器（渲染层）**：按源逐字搬运 `.fs-show` + `!important` + 全屏禁用 `hover` 的显隐方案、
+`attachAutoHideCtrls`/`detachAutoHideCtrls`（四个活动事件绑 document、3 秒隐藏）、
+原生全屏驱动 `body.fs-mode`、以及播放器的**准备/下载覆盖层**（`NativePlayerOverlay.jsx`，
+它独立订阅进度事件，绕开 `Player.jsx:407` 开始播放后即丢弃事件的限制）。
+
+**播放链（主进程）**：加密 App 片源改为"ffmpeg 直接读远端 URL、边解密边写分片 MP4、
+写到够播即返回地址"；终态化后同一 URL 后续请求走 Range（恢复拖动）。决策与被否决方案见
+`docs/ADR-0002-progressive-encrypted-playback.md`。
+
+### 期间发现并修掉的真实缺陷
+
+1. **交付模块里的 Critical 死锁**（我写的 `createGrowingFileStream`）：按 ReadableStream 规范，
+   `pull()` 在"读到 EOF 但生产者仍在写"路径上 `await` 后直接 return 且不入队时，pull 不会再次被调用
+   → 永久死锁；事件循环随后空掉、进程静默 `exit 0`，**看起来像跑完了**。
+   已修（等待循环移进 pull 内部 + 可唤醒 cancel/abort + `onClose` 单一收尾出口），
+   并补**看门狗回归测试**。我亲自把旧实现还原复跑验证：旧实现下**退出码 1（失败）而不是挂住**。
+2. **生命周期洞**：释放"创建流的会话"会误杀另一个复用同片源的会话的写盘进程 → 加 `state.owned` 守卫。
+3. **工具提示回退**：移植后「全屏」按钮丢了快捷键提示（同一条控制条上其他按钮都在）→ 已补回。
+4. **面板被一起隐藏（必要例外）**：控制条内嵌「更多播放选项 / 弹幕设置 / 画质列表」，
+   照搬源机制会导致面板打开 3 秒后**连面板一起消失**。已加最小例外
+   `holdAutoHideCtrls()`/`releaseAutoHideCtrls()`（计数式，可嵌套，`detach` 时归零），
+   并已由 `scripts/check-native-auto-hide.cjs` 覆盖。
+
+### 验证（我独立复核，非采信 agent 自述）
+
+- `progressive-media.test.cjs` 11/11；单元测试层 9/9；`npm run build:react` 通过。
+- `check-app-media.cjs` 8/8，安全断言保留（密钥只出现在解密那一次调用、不进错误信息、不留孤儿进程）。
+- 全量 56 个 check 脚本：**失败项与移植前完全一致（10 个既有/环境类）**，无新增失败。
+
+### 移植带来的行为变化（用户需知）
+
+源的机制只有"有活动就显示、3 秒无操作隐藏"。以下本仓库原有耦合**随移植消失**：
+暂停时保持可见、键盘焦点保持可见、拖动进度条保持可见、"切源/自动连播过程中不得唤出"。
+面板打开时的可见性属缺陷、已单独补回。
+
+### 仍需真机验证（本文不宣称"缓冲慢已解决"）
+
+见 `docs/ADR-0002-progressive-encrypted-playback.md` §6.1：起播阈值（256KiB/20s）、
+Chromium 对自定义协议 200+chunked 的实际判定、HEVC/AVC 解码、终态化后拖动、临时卷空间。
+以及 §6.2 需渲染层配合的三点（准备期状态、可重试 seek、缓冲中与片源故障的区分）。
