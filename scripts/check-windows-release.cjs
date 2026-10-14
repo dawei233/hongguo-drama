@@ -68,7 +68,7 @@ async function keyHandoff(key, code, expectedSource) {
           result.frames++;
           const controls = getComputedStyle(document.querySelector('.player-controls'));
           if (Number(controls.opacity) > 0 || controls.pointerEvents !== 'none') result.visibleFrames++;
-          if (document.fullscreenElement !== document.querySelector('.player-stage')) result.fullscreenLost = true;
+          if (!document.querySelector('.app-layout.player-fullscreen')) result.fullscreenLost = true;
           result.sourceChanged ||= !!video.currentSrc && video.currentSrc !== originalSource;
           result.nextPlaying = result.sourceChanged && !video.paused && video.readyState >= 2 && video.currentTime > 0.7;
           if (result.nextPlaying) break;
@@ -227,7 +227,7 @@ async function keyHandoff(key, code, expectedSource) {
   fs.writeFileSync(path.join(out, 'portable-windows-playback.png'), Buffer.from(screenshot.data, 'base64'));
   await clickControl('全屏');
   await delay(500);
-  assert(await evaluate('document.fullscreenElement === document.querySelector(".player-stage")'), 'Player must enter native fullscreen');
+  assert(await evaluate('!!document.querySelector(".app-layout.player-fullscreen")'), 'Player must enter native window fullscreen');
   await clickControl('播放');
   await cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 100, y: 100 });
   await delay(2400);
@@ -283,7 +283,7 @@ async function keyHandoff(key, code, expectedSource) {
         result.frames++;
         const controls = getComputedStyle(document.querySelector('.player-controls'));
         if (Number(controls.opacity) > 0 || controls.pointerEvents !== 'none') result.visibleFrames++;
-        if (document.fullscreenElement !== document.querySelector('.player-stage')) result.fullscreenLost = true;
+        if (!document.querySelector('.app-layout.player-fullscreen')) result.fullscreenLost = true;
         result.sourceChanged ||= !!video.currentSrc && video.currentSrc !== originalSource;
         result.nextPlaying = result.sourceChanged && !video.paused && video.readyState >= 2 && video.currentTime > 0.7;
         if (result.nextPlaying) break;
@@ -304,7 +304,7 @@ async function keyHandoff(key, code, expectedSource) {
   result.checks.push('Actual single-file EXE: after default ArrowUp returns to the previous episode, natural ended advances through Player to the expected second local flower episode; every sampled frame retains hidden controls and fullscreen; pointer movement restores controls');
   await clickControl('退出全屏');
   await delay(2400);
-  assert(await evaluate('!document.fullscreenElement && !document.querySelector("video").paused && getComputedStyle(document.querySelector(".player-controls")).opacity === "0"'), 'Ordinary landscape must hide idle controls after exiting fullscreen');
+  assert(await evaluate('!document.querySelector(".app-layout.player-fullscreen") && !document.querySelector("video").paused && getComputedStyle(document.querySelector(".player-controls")).opacity === "0"'), 'Ordinary landscape must hide idle controls after exiting fullscreen');
   result.fullscreenControls = { idleHidden: true, pointerRestores: true, pausedVisible: true, resumedHidden: true, landscapeIdleHidden: true };
   result.checks.push('Actual single-file EXE: fullscreen and ordinary landscape idle hide controls; pointer restores; pause keeps visible; resume hides');
   result.passed = true;

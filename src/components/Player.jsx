@@ -814,8 +814,12 @@ function Player({ target, onNavigate, onSeriesSelected, active = true, portrait 
     if (document.querySelector('.stealth-mode')) { showToast('请先退出隐身小窗'); return; }
     try {
       if (portrait) { setWindowFill(fill => !fill); return; }
-      if (document.fullscreenElement === stageRef.current) await document.exitFullscreen();
-      else await stageRef.current?.requestFullscreen();
+      // 用 Electron 原生窗口全屏，不用 DOM Fullscreen API。
+      // 原因见 main.js 的 set-window-fullscreen 注释：DOM 全屏不会让窗口成为前台窗口，
+      // 多显示器下用户切到别的窗口后，播放器收不到鼠标事件 —— 控制条隐藏后就再也唤不出来。
+      const current = await window.electronAPI?.getWindowFullscreen?.();
+      const result = await window.electronAPI?.setWindowFullscreen?.(!current);
+      if (!result?.success) throw new Error(result?.error || '全屏切换失败');
     } catch { showToast('无法进入或退出全屏，请重试'); }
   }, [portrait, showToast]);
 

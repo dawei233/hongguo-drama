@@ -44,7 +44,15 @@ const source = transformSync(fs.readFileSync(path.join(__dirname, '../src/compon
     else if (document.fullscreenElement === stage) await document.exitFullscreen();
     else await stage.requestFullscreen();
   };
-  const context = { module: { exports: {} }, document, window: { addEventListener: (name, fn) => windowListeners.set(name, fn), removeEventListener: name => windowListeners.delete(name) }, setTimeout: (fn, delay) => { timers.set(++nextTimer, { fn, at: now + delay }); return nextTimer; }, clearTimeout: id => timers.delete(id), require: name => name === 'react' ? react : name === '../shortcuts' ? shortcutModule.exports : name === './VideoEnhancement' ? videoEnhancementStub : {} };
+  // 全屏已改为 Electron 原生窗口全屏：这里提供 electronAPI 桩。
+  // onClick 现在异步读取状态再取反，所以桩要维护 nativeFullscreen 并在切换时回调监听者。
+  let nativeFullscreen = false; const fullscreenListeners = new Set();
+  const electronAPI = {
+    getWindowFullscreen: async () => nativeFullscreen,
+    setWindowFullscreen: async value => { nativeFullscreen = value === true; fullscreenCalls++; fullscreenListeners.forEach(fn => fn(nativeFullscreen)); return { success: true, fullscreen: nativeFullscreen }; },
+    onWindowFullscreenChanged: fn => { fullscreenListeners.add(fn); return () => fullscreenListeners.delete(fn); },
+  };
+  const context = { module: { exports: {} }, document, window: { electronAPI, addEventListener: (name, fn) => windowListeners.set(name, fn), removeEventListener: name => windowListeners.delete(name) }, setTimeout: (fn, delay) => { timers.set(++nextTimer, { fn, at: now + delay }); return nextTimer; }, clearTimeout: id => timers.delete(id), require: name => name === 'react' ? react : name === '../shortcuts' ? shortcutModule.exports : name === './VideoEnhancement' ? videoEnhancementStub : {} };
   context.exports = context.module.exports; vm.runInNewContext(source, context);
   const nodes = () => { const out = []; const visit = node => { if (!node || typeof node !== 'object') return; out.push(node); node.children?.forEach(visit); }; visit(tree); return out; };
   const find = label => nodes().find(node => node.props['aria-label'] === label);
@@ -71,7 +79,7 @@ const source = transformSync(fs.readFileSync(path.join(__dirname, '../src/compon
   find('播放速度').props.onChange({ target: { value: '4' } }); assert.equal(selectedRate, 4);
   documentListeners.get('keydown')({ key: 'Escape', preventDefault() {}, stopPropagation() {} }); render(); assert.equal(find('播放速度'), undefined);
   find('更多播放选项').props.onClick(); render(); documentListeners.get('pointerdown')({ target: {} }); render(); assert.equal(find('播放速度'), undefined);
-  await find('全屏').props.onClick(); render(); assert.equal(fullscreenCalls, 1); assert.ok(find('退出全屏'));
+  await find('全屏').props.onClick(); render(); render(); await Promise.resolve(); render(); assert.equal(fullscreenCalls, 1); assert.ok(find('退出全屏'));
   await find('播放').props.onClick(); render(); advance(); render();
   const hidden = () => tree.props.className.includes('controls-hidden');
   let pointerX = 100;
@@ -199,7 +207,7 @@ const source = transformSync(fs.readFileSync(path.join(__dirname, '../src/compon
   windowListeners.get('pointerup')(); advance(); render(); assert.ok(hidden(), 'releasing the slider restarts hiding');
   keyboardFocus = true; stageListeners.get('focusin')({ target: find('暂停') }); advance(); render(); assert.ok(!hidden(), 'keyboard focus remains visible');
   keyboardFocus = false; stageListeners.get('focusout')(); advance(); render(); assert.ok(hidden());
-  await find('退出全屏').props.onClick(); render(); render(); assert.equal(document.fullscreenElement, null);
+  await find('退出全屏').props.onClick(); render(); render(); await Promise.resolve(); render(); assert.equal(nativeFullscreen, false);
   advance(); render(); assert.ok(hidden(), 'normal landscape must hide idle controls after exiting fullscreen');
   movePointer(); assert.ok(!hidden(), 'normal landscape movement reveals controls');
   windowListeners.get('blur')(); advance(); render(); assert.ok(hidden(), 'normal landscape hides with the pointer outside the app');

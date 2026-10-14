@@ -3498,6 +3498,49 @@ ipcMain.handle('set-stealth-mode', async (event, enabled) => {
 });
 const episodePanel = createEpisodePanelController({ ipcMain, screen, getMainWindow: () => mainWindow, getLayout: () => windowLayout });
 ipcMain.handle('get-window-layout', () => windowLayout);
+
+// ===== 播放器全屏（Electron 原生窗口全屏）=====
+// 为什么不用 DOM Fullscreen API（stage.requestFullscreen()）：
+//   DOM 全屏只改变渲染层，**不会让窗口成为前台窗口**。多显示器下这点会直接坏掉：
+//   用户在另一块屏幕上点了别的程序后，焦点留在那边，鼠标消息被系统投递给那个前台窗口，
+//   播放器所在窗口收不到 pointermove —— 表现为"全屏后控制条隐藏了就再也唤不出来，
+//   只能按 Esc"，而键盘仍可用（键盘由窗口消息直接投递，不经命中测试）。
+//   实测证据（双屏：主屏 3840x2160 + 副屏竖屏 1080x1920 位于负坐标）：
+//     焦点在别的窗口时，副屏全屏下移动鼠标 5 次，控制条不出现；
+//     把焦点切回本窗口后，同样操作控制条正常出现。
+//   原生全屏由 Windows 参与焦点与 z 序管理，不存在这个问题。
+// 代价：原生全屏是**整个窗口**全屏，DOM 的 :fullscreen 伪类不再生效，因此渲染层改用
+//   fullscreen 状态类（见 PlayerControls / index.css）自行处理"只显示播放器"的布局。
+ipcMain.handle('get-window-fullscreen', () => Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isFullScreen()));
+ipcMain.handle('set-window-fullscreen', async (event, enabled) => {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) {
+    return { success: false, error: '窗口不可用' };
+  }
+  const win = mainWindow;
+  const want = enabled === true;
+  if (win.isFullScreen() === want) return { success: true, fullscreen: want };
+  try {
+    // 与 set-window-layout 里的退出全屏一致：等待 leave/enter 事件，超时则如实报错，
+    // 不假装成功 —— 渲染层的图标状态依赖这个结果。
+    await new Promise((resolve, reject) => {
+      const name = want ? 'enter-full-screen' : 'leave-full-screen';
+      const done = () => { clearTimeout(timer); resolve(); };
+      const timer = setTimeout(() => { win.removeListener(name, done); reject(new Error('全屏切换超时')); }, 3000);
+      win.once(name, done);
+      win.setFullScreen(want);
+    });
+    // 关键：原生全屏后主动确保窗口为前台窗口，否则多屏下鼠标事件仍可能被别的窗口截走。
+    if (want) win.focus();
+    return { success: true, fullscreen: win.isFullScreen() };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+// 用户用系统方式（F11 / 窗口菜单 / Esc）改变全屏时，如实同步给渲染层
+function onFullScreenChange() {
+  sendToRenderer('window-fullscreen-changed', Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isFullScreen()));
+}
+
 ipcMain.handle('set-window-layout', async (event, mode) => {
   if (!mainWindow || event.sender !== mainWindow.webContents || !['portrait', 'landscape'].includes(mode)) {
     return { success: false, error: '无法切换窗口布局' };
@@ -3557,6 +3600,9 @@ function createWindow() {
 
   mainWindow.setMenuBarVisibility(false);
   episodePanel.attach(mainWindow);
+  // 系统级全屏变化（F11、窗口菜单、Esc）也要让渲染层知道，否则图标状态会与实际不符
+  mainWindow.on('enter-full-screen', onFullScreenChange);
+  mainWindow.on('leave-full-screen', onFullScreenChange);
   mainWindow.webContents.once('did-finish-load', () => {
     if (storageError) sendToRenderer('storage-error', storageError);
   });

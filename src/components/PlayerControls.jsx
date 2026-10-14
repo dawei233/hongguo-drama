@@ -137,11 +137,21 @@ export default function PlayerControls({ danmaku, danmakuSource = 'comments', on
     return () => events.forEach(name => video.removeEventListener(name, sync));
   }, [videoRef, source, available]);
 
+  // 全屏状态来自主进程的原生窗口全屏，不再是 document.fullscreenElement。
+  // 改用原生全屏的原因见 main.js 的 set-window-fullscreen 注释（多显示器下 DOM 全屏
+  // 不参与焦点管理，鼠标事件会被别的窗口截走）。这里同时保留 DOM 全屏的监听：
+  // 隐藏小窗等路径仍可能使用它，两处都同步才不会出现图标与实际不符。
   useEffect(() => {
-    const sync = () => setFullscreen(document.fullscreenElement === stageRef.current);
-    document.addEventListener('fullscreenchange', sync);
-    sync();
-    return () => document.removeEventListener('fullscreenchange', sync);
+    let cancelled = false;
+    const syncDom = () => setFullscreen(document.fullscreenElement === stageRef.current);
+    document.addEventListener('fullscreenchange', syncDom);
+    window.electronAPI?.getWindowFullscreen?.().then((value) => { if (!cancelled) setFullscreen(value === true); });
+    const off = window.electronAPI?.onWindowFullscreenChanged?.((value) => setFullscreen(value === true));
+    return () => {
+      cancelled = true;
+      document.removeEventListener('fullscreenchange', syncDom);
+      off?.();
+    };
   }, [stageRef]);
 
   useEffect(() => {

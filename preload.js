@@ -37,6 +37,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   dismissedCount: () => ipcRenderer.invoke('dismissed-count'),
   rescanDownloads: () => ipcRenderer.invoke('rescan-downloads'),
 
+  // 播放器全屏（原生窗口全屏；多显示器下比 DOM 全屏可靠，见 main.js 的说明）
+  getWindowFullscreen: () => ipcRenderer.invoke('get-window-fullscreen'),
+  setWindowFullscreen: (enabled) => ipcRenderer.invoke('set-window-fullscreen', enabled),
+  onWindowFullscreenChanged: (cb) => {
+    const listener = (_event, fullscreen) => cb(fullscreen);
+    ipcRenderer.on('window-fullscreen-changed', listener);
+    return () => ipcRenderer.removeListener('window-fullscreen-changed', listener);
+  },
+
   // 在线播放（内存或临时磁盘缓存 + 自定义流协议）
   prepareOnlinePlay: (payload) => ipcRenderer.invoke('prepare-online-play', payload),
   releaseOnlinePlay: (payload) => ipcRenderer.invoke('release-online-play', payload),

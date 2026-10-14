@@ -35,3 +35,23 @@
 .player-controls-menu .player-picture-mode select { width: 100px; }
 
 .player-controls-menu { max-height: min(70vh, 480px); overflow-y: auto; overscroll-behavior: contain; }
+
+/* ── 原生全屏（Electron 窗口全屏）下的播放器布局 ──────────────────────────
+   改用原生全屏后，:fullscreen 伪类不再生效（窗口全屏不等于元素全屏），
+   因此上面那三条 :fullscreen 规则要有一套等价替代，由根容器上的
+   .player-fullscreen 类驱动（见 App.jsx）。保留 :fullscreen 规则是为了
+   兼容隐藏小窗等仍在用 DOM 全屏的路径。 */
+.player-fullscreen .sidebar,
+.player-fullscreen .window-toolbar,
+.player-fullscreen .compact-navigation,
+.player-fullscreen .stealth-toolbar { display: none !important; }
+.player-fullscreen .main-wrapper { min-width: 0; }
+.player-fullscreen .main-content[data-page="player"] { padding: 0; overflow: hidden; }
+.player-fullscreen .player-container { display: flex; flex-direction: column; min-height: 0; height: 100%; gap: 0; }
+/* 全屏时只留播放器：隐藏剧集列表、剧评、工具栏等所有非播放区域 */
+.player-fullscreen .player-container > :not(.player-viewing-layout):not(.player-empty) { display: none !important; }
+.player-fullscreen .player-viewing-layout { display: flex; flex: 1; min-height: 0; height: 100%; width: 100%; }
+.player-fullscreen .player-viewing-layout > :not(.player-stage) { display: none !important; }
+.player-fullscreen .player-stage { position: relative; inset: auto; flex: 1; width: 100%; height: 100%; min-height: 0; max-height: none; margin: 0; border-radius: 0; aspect-ratio: auto; background: #000; }
+.player-fullscreen .player-stage .player-video { width: 100%; height: 100%; object-fit: contain; }
+.player-fullscreen .player-controls { padding: 28px max(20px, env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left)); }
