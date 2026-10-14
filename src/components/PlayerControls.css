@@ -52,7 +52,10 @@
 .player-fullscreen .compact-navigation,
 .player-fullscreen .stealth-toolbar { display: none !important; }
 .player-fullscreen .main-wrapper { min-width: 0; }
-.player-fullscreen .main-content[data-page="player"] { padding: 0; overflow: hidden; }
+/* 前缀 .app-layout 是为了压过 index.css 的 `.layout-portrait.player-focused .main-content[...]`
+   —— 两者原本同为 (0,3,0)，而构建产物里本文件排在 index.css 之前，同优先级会被后者盖掉。
+   全屏与竖屏理论上不会同时出现（切布局前会先退出全屏），这里只是防御。 */
+.app-layout.player-fullscreen .main-content[data-page="player"] { padding: 0; overflow: hidden; }
 /* 关键：fixed 铺满，覆盖 max-width:1000px 与 margin:auto。
    z-index 刻意取 500：要盖住普通页面内容，但必须**低于提示条**（.dm-toast 是 999，
    见 DownloadManager.css:257）。用 99999 这类大值会把全屏时的操作反馈
