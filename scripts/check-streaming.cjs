@@ -33,6 +33,7 @@ function load(fetchPlayUrlSingle, overrides = {}) {
 }
 (async () => {
   let hits = 0, streamClosed = false;
+  const refererProbe = { hits: 0 };
   const requests = []; const endpointHits = new Map();
   const server = http.createServer((r, s) => {
     hits++;
@@ -48,7 +49,13 @@ function load(fetchPlayUrlSingle, overrides = {}) {
     if (r.url === '/empty') { s.writeHead(200, { 'content-length': '0' }); s.end(); return; }
     if (r.url === '/error-page') { s.writeHead(200, { 'content-type': 'text/html' }); s.end('<html>expired</html>'); return; }
     if (r.url === '/missing') { s.writeHead(404); s.end('missing'); return; }
-    if (r.url === '/referer' && !r.headers.referer) { s.writeHead(403); s.end('forbidden'); return; }
+    // 实测真实片源（qznovelvod 系）：带 Referer 会稳定 403，不带才 200。
+    // 这里据此建模：首次故意 403（模拟偶发风控），且**任何带 Referer 的请求都 403** ——
+    // 于是"403 后补上 Referer 重试"必然失败，而"去掉 Referer 重试"才会成功。
+    if (r.url === '/referer') {
+      refererProbe.hits += 1;
+      if (refererProbe.hits === 1 || r.headers.referer) { s.writeHead(403); s.end('forbidden'); return; }
+    }
     if (r.url === '/large') { s.writeHead(200, { 'content-length': String(301 * 1024 * 1024) }); s.write('hello'); return; }
     if (r.url === '/slow') { s.writeHead(200, { 'content-type': 'video/mp4', 'content-length': '99999' }); s.write('hello'); r.on('close', () => streamClosed = true); return; }
     if (r.url === '/broken') { s.writeHead(200, { 'content-length': '99999' }); s.write('hello'); setTimeout(() => s.destroy(), 20); return; }
@@ -110,12 +117,16 @@ function load(fetchPlayUrlSingle, overrides = {}) {
     const response = await h.context.requestMedia({ url: base + '/range', source: 'app' });
     response.data.destroy(); assert.equal(requests.at(-1).headers.referer, undefined);
   });
-  await check('web: real provider switches cached failed episode to App for five minutes, isolates episodes and expires', async () => {
-    let now = Date.now(), webHits = 0, appHits = 0;
+  // 取源顺序已改为 App 优先、web 兜底（原先相反）。这条测试相应收窄为**只验证顺序与回退**：
+  // 原先它还顺带验证「失败片源禁用五分钟、按集隔离、过期恢复」，但那是 markWebMediaFailure
+  // 的机制，已由 check-source-recovery / check-source-retry / check-web-media-guard 覆盖，
+  // 放在这里会与主进程 requestMedia 的接线耦合，反而更难定位失败原因。
+  await check('web: App preferred for quality, web used only as fallback when App is unavailable', async () => {
+    let webHits = 0, appHits = 0, appBroken = false;
     const nativePath = path.resolve(__dirname, '../src/native/hongguo.js');
     const nativeRequire = createRequire(nativePath);
     const context = vm.createContext({ module: { exports: {} }, Buffer, URL, process: { env: {} }, console,
-      Date: class extends Date { static now() { return now; } },
+      Date, // 这里不再需要假时钟：本测试不涉及五分钟惩罚窗口
       require: name => name === 'axios' ? { get: async url => {
         webHits++;
         const vid = /\/(\d+)$/.exec(url)?.[1];
@@ -124,20 +135,27 @@ function load(fetchPlayUrlSingle, overrides = {}) {
             publicVideoSeo: { available: true, itemId: vid, seriesId: '1' } },
         } })}</script><script type="application/ld+json">${JSON.stringify({ '@type': 'VideoObject', url: `https://hongguoduanju.com/player/1/${vid}`, contentUrl: 'https://media.example/web.mp4' })}</script>` };
       } }
-        : name === './app-source' ? { fetchAppPlayUrl: async () => { appHits++; return { url: 'https://media.example/app.mp4', source: 'app' }; } } : nativeRequire(name),
+        : name === './app-source' ? { fetchAppPlayUrl: async vid => { appHits++; if (appBroken) throw new Error('app source down'); return { url: 'https://media.example/app.mp4', source: 'app', vid: String(vid) }; } } : nativeRequire(name),
     });
     vm.runInContext(fs.readFileSync(nativePath, 'utf8'), context);
     const native = context.module.exports;
+    // 1) App 健康时必须优先取 App：官网只是低清预览（实测官网页声明 360x640），
+    //    App 才有 1080p。这正是"画质被压到 640x360"的修复点。
     const first = await native.fetchPlayUrlSingle('11', '1');
-    assert.equal(first.source, 'web'); assert.equal(first.vid, '11');
-    const h = hload(native.fetchPlayUrlSingle, { './src/native/hongguo': native });
-    await assert.rejects(h.context.requestMedia({ ...first, url: base + '/missing' }));
-    assert.equal((await native.fetchPlayUrlSingle('11', '1')).source, 'app', 'failed cached URL must not be returned again');
+    assert.equal(first.source, 'app', 'App 可用时不得再优先走官网低清源');
+    assert.equal(first.vid, '11');
+    assert.equal(first.url, 'https://media.example/app.mp4');
+    assert.equal(webHits, 0, 'App 可用时不应访问官网页面');
+    // 2) App 不可用时才回退官网，且必须回退成功（不能因为改了顺序就丢掉兜底）
+    appBroken = true;
+    const fallback = await native.fetchPlayUrlSingle('11', '1', { force: true });
+    assert.equal(fallback.source, 'web', 'App 不可用时必须回退官网源');
+    assert.equal(fallback.url, 'https://media.example/web.mp4');
+    assert.equal(webHits, 1);
+    // 3) 缓存的失败不会被永久复用：App 恢复后重新取源应回到 App
+    appBroken = false;
     assert.equal((await native.fetchPlayUrlSingle('11', '1', { force: true })).source, 'app');
-    assert.equal(webHits, 1); assert.equal(appHits, 2);
-    assert.equal((await native.fetchPlayUrlSingle('22', '1')).source, 'web');
-    now += 5 * 60 * 1000 + 1;
-    assert.equal((await native.fetchPlayUrlSingle('11', '1')).source, 'web');
+    assert.equal(appHits, 3);
   });
   await check('prefetch: plain bytes are cached and reused without another media request', async () => {
     const h = hload(async () => ({ url: base + '/range' }));
@@ -339,10 +357,15 @@ function load(fetchPlayUrlSingle, overrides = {}) {
     const result = await h.handlers['prepare-online-play']({}, { vid: 'full-partial', prefetch: true });
     assert.equal(result.success, true); assert.equal(result.size, 10);
   });
-  await check('recovery: 403 retries once with provider Referer and preserves valid body', async () => {
+  // 这条测试原先是 "403 retries once with provider Referer" —— 把"补上 Referer 重试"当成
+  // 正确行为锁住了。实测相反：带 Referer 才是 403 的成因。改为断言重试时**不带** Referer。
+  await check('recovery: 403 retries once after dropping Referer and preserves valid body', async () => {
     const h = hload(async () => ({ url: base + '/referer' })), before = hits;
+    refererProbe.hits = 0;
     const result = await h.handlers['prepare-online-play']({}, { vid: 'referer', prefetch: true });
     assert.equal(result.success, true); assert.equal(result.size, 10); assert.equal(hits, before + 2);
+    assert.equal(refererProbe.hits, 2, '应当恰好重试一次');
+    assert.equal(requests.at(-1).headers.referer, undefined, '重试时不得再带 Referer（带则真实片源必 403）');
   });
   await check('recovery: local files serve suffix and reject malformed or unsatisfiable Range', async () => {
     const h = hload(async () => ({})), file = path.join(root, 'local-range.mp4');

@@ -547,14 +547,22 @@ function unavailableSources(sources, quality = 'auto') {
 
 async function fetchPlayUrlFresh(vid, sid, skipWeb = false) {
   const sources = [];
-  const web = !skipWeb && await fetchPlayUrlFromWeb(vid, sid, error => sources.push(sourceFailure('web', error)));
-  if (web && web.url) return web;
-
+  // App 优先，官网网页版降为兜底。
+  //
+  // 原先的顺序是官网优先，代价有两个，而且会同时发作：
+  //   1) 官网那个 VideoObject 只是**低清预览** —— 实测官网页自己声明 width 360 / height 640，
+  //      而 App 接口同一集给到 1080p。官网优先 = 能播时画质被压到 360×640。
+  //   2) 官网直链本身不稳定（上游专门写了 web-media-guard.js 去防），一旦失败回退到 App，
+  //      而 App 片源因为带着多余的 Referer 必然 403 —— 于是表现为"播放老是 403"。
+  // 换成 App 优先后：画质取到最高档，且不再依赖官网那条低清链路；官网仍作为兜底保留。
   try {
     return await require('./app-source').fetchAppPlayUrl(String(vid));
   } catch (error) {
     sources.push(sourceFailure('app', error));
   }
+
+  const web = !skipWeb && await fetchPlayUrlFromWeb(vid, sid, error => sources.push(sourceFailure('web', error)));
+  if (web && web.url) return web;
 
   const body = {
     biz_param: MODEL_BIZ_PARAM,
@@ -565,7 +573,8 @@ async function fetchPlayUrlFresh(vid, sid, skipWeb = false) {
     const j = await apiCall("/novel/player/multi_video_model/preload/v1", body, 1, 6000);
     const item = j?.data?.[vid] || {};
     const [url, spadeA, codec] = parseModelVideo(item.video_model);
-    if (url) return { url, spadeA, codec, source: 'api', vid: String(vid), userAgent: UA, referer: VIDEO_REFERER };
+    // 同样不带 Referer：该片源与 App 路径同属 qznovelvod/videocdn 系，带 Referer 会被 403。
+    if (url) return { url, spadeA, codec, source: 'api', vid: String(vid), userAgent: UA };
     sources.push(sourceFailure('api'));
   } catch (e) {
     sources.push(sourceFailure('api', e));

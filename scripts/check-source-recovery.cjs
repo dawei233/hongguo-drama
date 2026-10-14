@@ -127,11 +127,13 @@ const checks = [
       } },
     });
     assert.equal((await f.fetchPlayUrlSingle('11', '1')).source, 'app');
-    assert.deepEqual(webTimeouts, [4000, 4000], 'Web cannot consume the whole lookup deadline');
+    // App 优先后，App 可用时根本不会访问 web，因此这里是空的。
+    // 「web 不能吃掉整段预算」这个约束改由下面 App 不可用的场景验证。
+    assert.deepEqual(webTimeouts, [], 'App 可用时不应访问 web');
     assert.deepEqual(apiTimeouts, []);
     appAvailable = false; webTimeouts.length = 0;
     assert.equal((await f.fetchPlayUrlSingle('11', '1', { force: true })).code, 'SOURCE_UNAVAILABLE');
-    assert.deepEqual(webTimeouts, [4000, 4000]);
+    assert.deepEqual(webTimeouts, [4000, 4000], '每个 web 候选只给 4 秒，不能吃掉整段预算');
     assert.deepEqual(apiTimeouts, [6000], 'legacy playback lookup must not repeat after timeout');
     webAvailable = true; webTimeouts.length = 0;
     assert.equal((await f.fetchEpisodeListFromWeb('1')).series_id, '1');
@@ -171,7 +173,9 @@ const checks = [
     for (const candidate of result.variants) {
       assert.equal(candidate.source, 'app'); assert.equal(candidate.vid, '11');
       assert.equal(candidate.userAgent, f.calls[0].headers['User-Agent']);
-      assert.equal(candidate.referer, 'https://novelquickapp.com/');
+      // 候选**不得**带 Referer —— 实测给 qznovelvod 系片源带 Referer 会稳定 403，
+      // 这正是"播放老是 403"的根因（详见 app-source.js 里的说明）。
+      assert.equal(candidate.referer, undefined, 'App 片源候选不得携带 Referer');
       assert.equal(candidate.variants, undefined);
     }
     assert.equal(result.variants[2].contentKey, key1); assert.equal(result.variants[3].contentKey, key2);
@@ -200,7 +204,9 @@ const checks = [
     const f = routeFixture(); f.state.web = false;
     const unavailable = await f.fetchPlayUrlSingle('11', '1');
     assert.equal(unavailable.code, 'SOURCE_UNAVAILABLE');
-    assert.deepEqual(Array.from(unavailable.sources, item => item.source), ['web', 'app', 'api']);
+    // 顺序已改为 App 优先、web 兜底（原先相反），失败上报的 source 顺序随之改变。
+    // 断言的是"每条路径都如实报了原因"，顺序本身跟着取源策略走。
+    assert.deepEqual(Array.from(unavailable.sources, item => item.source), ['app', 'web', 'api']);
     assert.doesNotMatch(JSON.stringify(unavailable), /secret|signed\.invalid|private|前.*集|付费|会员/);
     assert.ok(unavailable.sources.every(item => item.code && item.message));
     f.state.app = true;

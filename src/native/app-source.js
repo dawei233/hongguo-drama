@@ -284,7 +284,10 @@ async function fetchAppPlayUrl(vid, options = {}) {
                     if (seen.has(identity)) continue;
                     seen.add(identity);
                     variants.push({ url, contentKey, codec: selected.codec === 'bytevc1' ? 'hevc' : selected.codec, source: 'app', vid,
-                        userAgent: VIDEO_UA, referer: 'https://novelquickapp.com/', quality: requestedQuality === 'auto' ? selected.quality : requestedQuality,
+                        // 这里**不能**带 Referer。实测：给 qznovelvod.com 的片源带上
+                        // Referer: https://novelquickapp.com/ 会稳定返回 403，去掉就 200。
+                        // 之前带的那个头正是"播放老是 403"的根因；App 片源不需要 Referer。
+                        userAgent: VIDEO_UA, quality: requestedQuality === 'auto' ? selected.quality : requestedQuality,
                         ...(requestedQuality === 'auto' ? {} : { width: selected.width, height: selected.height }) });
                 } catch (error) { lastError = error; }
             }

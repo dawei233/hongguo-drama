@@ -1752,7 +1752,11 @@ async function requestMedia(playInfo, options = {}) {
       }
       const retryable = web ? [404, 410].includes(status) || status >= 500 && status <= 599 : status === 403;
       if (!cancelled && attempt === 0 && retryable) {
-        if (!web && !config.headers.Referer) config.headers.Referer = hongguo.VIDEO_REFERER;
+        // 非网页来源遇到 403 时**去掉** Referer 再试一次。
+        // 这里原先做的是相反的事（补上 Referer: novelquickapp.com），而实测正是这个头让
+        // qznovelvod.com 稳定 403 —— 等于重试必然再失败一次，把"偶发失败"变成"必然失败"。
+        // 网页来源的直链两种都不带也返回 200，所以只动非网页来源。
+        if (!web) delete config.headers.Referer;
         continue;
       }
       if (!cancelled && config.method === 'GET' && (retryable || status === 403)) hongguo.markWebMediaFailure?.(playInfo);
