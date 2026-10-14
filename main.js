@@ -41,6 +41,7 @@ const APP_VERSION = app.getVersion() || '1.0.0';
 
 const APP_TITLE = IS_PREVIEW ? '红果短剧预览' : '红果短剧';
 const { createStealthController } = require('./src/native/stealth-window');
+const { createFullscreenPointerController } = require('./src/native/fullscreen-pointer');
 
 let mainWindow = null;
 let storageError = null;
@@ -3487,6 +3488,9 @@ let windowLayout = 'landscape';
 let landscapeBounds = null;
 let layoutChanging = false;
 const stealth = createStealthController({ screen, getWindow: () => mainWindow });
+// 全屏时的指针轮询：DOM 指针事件在页面失焦时会被 Blink 抑制，轮询不依赖它。
+// 详见 src/native/fullscreen-pointer.js 的说明。
+const fullscreenPointer = createFullscreenPointerController({ screen, getWindow: () => mainWindow });
 ipcMain.handle('set-stealth-mode', async (event, enabled) => {
   if (!mainWindow || event.sender !== mainWindow.webContents || typeof enabled !== 'boolean') return { success: false, error: '无法切换小窗' };
   if (enabled && (mainWindow.isFullScreen() || layoutChanging)) return { success: false, error: '请先退出全屏，再开启隐身小窗' };
@@ -3516,6 +3520,12 @@ ipcMain.handle('set-window-fullscreen', async (event, enabled) => {
   if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) {
     return { success: false, error: '窗口不可用' };
   }
+  // 与 set-window-layout 保持一致：隐身小窗期间拒绝切换全屏。
+  // 必须在这里判断，不能只靠渲染层的 .stealth-mode 类名 —— 小窗会用 setFullScreenable(false)
+  // 把窗口设为不可全屏，此时 Electron 的 SetFullScreen 是**静默 no-op**，我们会一直等到超时，
+  // 给用户报"全屏切换超时"，把真实原因（窗口被设为不可全屏）掩盖掉。
+  // 主进程的 stealth.enabled 才是权威真相来源。
+  if (stealth.enabled) return { success: false, error: '请先退出隐身小窗再切换全屏' };
   const win = mainWindow;
   const want = enabled === true;
   if (win.isFullScreen() === want) return { success: true, fullscreen: want };
@@ -3529,9 +3539,18 @@ ipcMain.handle('set-window-fullscreen', async (event, enabled) => {
       win.once(name, done);
       win.setFullScreen(want);
     });
-    // 关键：原生全屏后主动确保窗口为前台窗口，否则多屏下鼠标事件仍可能被别的窗口截走。
+    // 原生全屏后主动确保窗口为前台窗口。注意：这只覆盖"进入全屏那一刻"。
+    // 用户场景是**之后才失焦**（切到别的屏点别的程序），那时没有任何代码会再调 focus，
+    // 而"鼠标悬停在非前台窗口上"并不会让窗口获得焦点 —— 所以真正兜住用户场景的是
+    // PlayerControls 里的失焦处理与主进程轮询（见下面 fullscreen-pointer 相关实现）。
     if (want) win.focus();
-    return { success: true, fullscreen: win.isFullScreen() };
+    // 用**切换完成后读到的真实值**广播给渲染层。
+    // 不要依赖 enter-full-screen 事件回调里的 isFullScreen()：Electron 触发该事件的瞬间
+    // 该值可能尚未更新，会广播出 false（实测诊断：主进程 fullscreen:true，渲染层却没收到）。
+    const actual = win.isFullScreen();
+    fullscreenPointer.setEnabled(actual);
+    sendToRenderer('window-fullscreen-changed', actual);
+    return { success: true, fullscreen: actual };
   } catch (error) {
     return { success: false, error: error.message };
   }
@@ -3542,7 +3561,10 @@ ipcMain.handle('set-window-fullscreen', async (event, enabled) => {
 function onFullScreenChange() {
   setTimeout(() => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
-    sendToRenderer('window-fullscreen-changed', mainWindow.isFullScreen());
+    const value = mainWindow.isFullScreen();
+    // 全屏期间才需要轮询指针（失焦时 DOM 指针事件会被 Blink 抑制）
+    fullscreenPointer.setEnabled(value);
+    sendToRenderer('window-fullscreen-changed', value);
   }, 0);
 }
 
@@ -3622,6 +3644,7 @@ function createWindow() {
 
   mainWindow.on('closed', () => {
     stealth.dispose();
+    fullscreenPointer.dispose();
     mediaAccess.clear();
     clearOnlineCache();
     for (const job of compatPreparing.values()) { job.cancelled = true; job.controller.abort(); }

@@ -90,6 +90,15 @@ export default function PlayerControls({ danmaku, danmakuSource = 'comments', on
       if (controlsRef.current?.contains(event.target)) reveal();
       else scheduleHide();
     };
+    // 全屏时的指针移动来自主进程轮询，而不是 DOM 的 pointermove。
+    //
+    // 为什么必须有这一条：页面不是 active（窗口失焦）时，Blink 会抑制 hover/指针语义，
+    // 渲染层收不到 pointermove —— 即使鼠标确实在本窗口上、WM_MOUSEMOVE 也确实送达了
+    // （微软文档：消息发给光标下的窗口，不需要窗口是前台）。实测用户场景正是如此：
+    // 副屏全屏 → 控制条隐藏 → 去别的屏点别的程序 → 回来只移动鼠标（不点击，窗口因此
+    // 不会重新获得焦点）→ 控制条再也唤不出，只能按 Esc。
+    // 轮询不读 DOM、不依赖焦点，所以这个场景能兜住。
+    const offFullscreenPointer = window.electronAPI?.onFullscreenPointerMove?.(() => reveal());
     stage?.addEventListener('pointermove', onPointerMove);
     stage?.addEventListener('pointerdown', startDrag);
     stage?.addEventListener('focusin', onFocus);
@@ -128,6 +137,7 @@ export default function PlayerControls({ danmaku, danmakuSource = 'comments', on
       window.removeEventListener('pointercancel', stopDrag);
       window.removeEventListener('blur', onBlur);
       window.removeEventListener('focus', onWindowFocus);
+      offFullscreenPointer?.();
     };
   }, [portrait, expanded, available, media.paused, media.ended, continuing, autoContinue, menuOpen, danmakuOpen, source, stageRef, shortcuts]);
 

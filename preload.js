@@ -45,6 +45,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('window-fullscreen-changed', listener);
     return () => ipcRenderer.removeListener('window-fullscreen-changed', listener);
   },
+  // 全屏时主进程轮询到的指针移动（DOM 指针事件在页面失焦时会被 Blink 抑制，
+  // 这是副屏全屏后控制条唤不出来的真正原因，详见 src/native/fullscreen-pointer.js）
+  onFullscreenPointerMove: (cb) => {
+    const listener = () => cb();
+    ipcRenderer.on('fullscreen-pointer-move', listener);
+    return () => ipcRenderer.removeListener('fullscreen-pointer-move', listener);
+  },
 
   // 在线播放（内存或临时磁盘缓存 + 自定义流协议）
   prepareOnlinePlay: (payload) => ipcRenderer.invoke('prepare-online-play', payload),
