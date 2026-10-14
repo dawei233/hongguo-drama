@@ -68,7 +68,7 @@ async function keyHandoff(key, code, expectedSource) {
           result.frames++;
           const controls = getComputedStyle(document.querySelector('.player-controls'));
           if (Number(controls.opacity) > 0 || controls.pointerEvents !== 'none') result.visibleFrames++;
-          if (document.fullscreenElement !== document.querySelector('.player-stage')) result.fullscreenLost = true;
+          if (!document.body.classList.contains('fs-mode')) result.fullscreenLost = true;   // 原生全屏由 body.fs-mode 表达
           result.sourceChanged ||= !!video.currentSrc && video.currentSrc !== originalSource;
           result.nextPlaying = result.sourceChanged && !video.paused && video.readyState >= 2 && video.currentTime > 0.7;
           if (result.nextPlaying) break;
@@ -231,8 +231,22 @@ async function keyHandoff(key, code, expectedSource) {
   const screenshot = await cdp('Page.captureScreenshot', { format: 'png' });
   fs.writeFileSync(path.join(out, 'portable-windows-playback.png'), Buffer.from(screenshot.data, 'base64'));
   await clickControl('全屏');
-  await delay(500);
-  assert(await evaluate('document.fullscreenElement === document.querySelector(".player-stage")'), 'Player must enter native fullscreen');
+  // 播放器已移植为**原生窗口全屏**（源实现的做法）：全屏由 body.fs-mode 表达，
+  // document.fullscreenElement 恒为 null，不能再拿它判断。
+  // 原生全屏要走一次主进程 IPC 往返，固定等待会误报 —— 轮询等条件成立，
+  // 并在失败时把渲染层实际状态打出来，便于一次定位。
+  {
+    const deadline = Date.now() + 5000;
+    let entered = false;
+    while (Date.now() < deadline) {
+      if (await evaluate('document.body.classList.contains("fs-mode")')) { entered = true; break; }
+      await delay(100);
+    }
+    if (!entered) {
+      const diag = await evaluate('JSON.stringify({ fsMode: document.body.classList.contains("fs-mode"), native: !!(await window.electronAPI?.getWindowFullscreen?.()), btn: document.querySelector("[aria-label=\\"退出全屏\\"]") ? "退出全屏" : (document.querySelector("[aria-label=\\"全屏\\"]") ? "全屏" : "无") })');
+      assert(false, 'Player must enter native window fullscreen (body.fs-mode); diag=' + diag);
+    }
+  }
   await clickControl('播放');
   await cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 100, y: 100 });
   await delay(2400);
@@ -288,7 +302,7 @@ async function keyHandoff(key, code, expectedSource) {
         result.frames++;
         const controls = getComputedStyle(document.querySelector('.player-controls'));
         if (Number(controls.opacity) > 0 || controls.pointerEvents !== 'none') result.visibleFrames++;
-        if (document.fullscreenElement !== document.querySelector('.player-stage')) result.fullscreenLost = true;
+        if (!document.body.classList.contains('fs-mode')) result.fullscreenLost = true;   // 原生全屏由 body.fs-mode 表达
         result.sourceChanged ||= !!video.currentSrc && video.currentSrc !== originalSource;
         result.nextPlaying = result.sourceChanged && !video.paused && video.readyState >= 2 && video.currentTime > 0.7;
         if (result.nextPlaying) break;
@@ -309,7 +323,7 @@ async function keyHandoff(key, code, expectedSource) {
   result.checks.push('Actual single-file EXE: after default ArrowUp returns to the previous episode, natural ended advances through Player to the expected second local flower episode; every sampled frame retains hidden controls and fullscreen; pointer movement restores controls');
   await clickControl('退出全屏');
   await delay(2400);
-  assert(await evaluate('!document.fullscreenElement && !document.querySelector("video").paused && getComputedStyle(document.querySelector(".player-controls")).opacity === "0"'), 'Ordinary landscape must hide idle controls after exiting fullscreen');
+  assert(await evaluate('!document.body.classList.contains("fs-mode") && !document.querySelector("video").paused && getComputedStyle(document.querySelector(".player-controls")).opacity === "0"'), 'Ordinary landscape must hide idle controls after exiting fullscreen');
   result.fullscreenControls = { idleHidden: true, pointerRestores: true, pausedVisible: true, resumedHidden: true, landscapeIdleHidden: true };
   result.checks.push('Actual single-file EXE: fullscreen and ordinary landscape idle hide controls; pointer restores; pause keeps visible; resume hides');
   result.passed = true;

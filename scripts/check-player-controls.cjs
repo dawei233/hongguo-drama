@@ -126,10 +126,21 @@ const source = transformSync(fs.readFileSync(path.join(__dirname, '../src/compon
   assert.ok(find('全屏'), '退出全屏后按钮回到「全屏」');
   // 等价旧断言「playing in landscape fullscreen must hide idle controls」：
   // 全屏挂上机制后，3 秒无操作即隐藏（旧实现是 2000ms 的 React 定时器）。
+  // 前提必须是**播放中**：本仓库在源方案之上加了一条记录在案的例外 —— 暂停时压住自动隐藏
+  // （见 PlayerControls.jsx 里 panelOpen 的说明），所以暂停态下不会隐藏。
+  await media.play(); render();
   attachAutoHideCtrls();
   assert.ok(barShown() && dlShown(), '进入全屏（attach）后控制条与下载进度条必须显示');
   advance(3000);
-  assert.ok(!barShown() && !dlShown(), '全屏下 3 秒无操作必须隐藏控制条与进度条');
+  assert.ok(!barShown() && !dlShown(), '全屏下播放中 3 秒无操作必须隐藏控制条与进度条');
+  // 暂停必须压住自动隐藏（本仓库的例外，源没有这条；发布门禁也验证该行为）
+  media.pause(); render();
+  assert.ok(barShown(), '暂停时必须重新显示控制条');
+  advance(10000);
+  assert.ok(barShown() && dlShown(), '暂停期间无论多久都不得隐藏控制条');
+  await media.play(); render();
+  advance(3000);
+  assert.ok(!barShown(), '恢复播放后 3 秒无操作应重新隐藏（压住已被释放）');
   // 等价旧断言「real pointer movement / clicking the video reveals controls」：
   // 任一活动事件重新显示。keydown 的绑定在 check-native-auto-hide.cjs 里断言 ——
   // 本夹具的 document 监听表是"一个事件名一个处理函数"，菜单打开时会覆盖 keydown，
@@ -184,6 +195,8 @@ const source = transformSync(fs.readFileSync(path.join(__dirname, '../src/compon
   assert.equal(timers.size, 0, '控制条组件自身不得创建自动隐藏定时器（机制已交给 attachAutoHideCtrls）');
 
   media.duration = NaN; listeners.get('durationchange')(); render(); assert.equal(find('播放进度').props.disabled, true);
+  // 播放态下按钮是「暂停」，先暂停再断言按钮可用性(标签会回到「播放」)
+  media.pause(); render();
   props.available = false; render(); assert.equal(find('播放').props.disabled, true);
   cleanups.forEach(fn => fn?.()); assert.equal(listeners.size, 0); assert.equal(documentListeners.size, 0); assert.equal(windowListeners.size, 0); assert.equal(timers.size, 0);
   assert.equal(stageListeners.size, 0, '控制条不得再把显隐监听绑到 stage 上（移植后只绑 document，见 check-native-auto-hide.cjs）');

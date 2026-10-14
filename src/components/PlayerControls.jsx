@@ -173,10 +173,13 @@ export default function PlayerControls({
   // DOM 全屏（无 electronAPI 时的回退）另外记一份。
   const expanded = fullscreen || nativeFullscreen;
 
-  // 控制条内的弹出面板（更多播放选项 / 弹幕设置 / 画质列表）打开期间压住自动隐藏。
-  // 不加这条的话，面板打开后 3 秒不动鼠标，整条控制条连同打开的面板会一起消失 ——
-  // 源实现没有这个例外，但那是缺陷而非有意的行为差异（详见 _autoHideHold 的说明）。
-  const panelOpen = menuOpen || danmakuOpen || qualityOpen;
+  // 需要"压住自动隐藏"的情形。两者都是本仓库在源方案之上**记录在案**的例外：
+  //   1. 控制条内的弹出面板（更多播放选项 / 弹幕设置 / 画质列表）打开时 ——
+  //      否则面板打开 3 秒不动鼠标，整条控制条连同**打开的面板**一起消失，那是缺陷；
+  //   2. 暂停时 —— 源没有这条（源只看"最后一次活动后 3 秒"），但暂停后用户往往还要
+  //      拖进度、切集、看设置，把操作入口藏掉不合理；这也是本仓库发布门禁原本就验证的行为。
+  //      注意 `media.paused` 初值为 true，所以"还没开始播"时同样保持可见，与既有行为一致。
+  const panelOpen = menuOpen || danmakuOpen || qualityOpen || media.paused;
   useEffect(() => {
     if (!panelOpen) return undefined;
     holdAutoHideCtrls();
