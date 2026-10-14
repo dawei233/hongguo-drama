@@ -207,7 +207,12 @@ async function keyHandoff(key, code, expectedSource) {
     for (let i=0; i<100; i++) { v=document.querySelector('video'); if(v?.readyState>=2) break; await new Promise(r=>setTimeout(r,100)); }
     if(!v || v.readyState<2) throw new Error('Player did not load local episode'); v.muted=true;
     if(v.paused) document.querySelector('[aria-label="播放"]').click();
-    await new Promise(r => setTimeout(r, 1200));
+    // 轮询等真正播起来，而不是固定等一小段再采样。
+    // 原实现是固定等 1200ms 后要求 currentTime > 0.5；CI 负载高时播放启动稍慢就误报，
+    // 实测已出现两次（0.368 与 0.483），属于测试自身的时序脆弱而非功能问题。
+    // 这里给足上限、条件满足即返回，断言本身仍是"必须真的播起来"。
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline && !(v.currentTime > 0.5)) { await new Promise(r => setTimeout(r, 100)); }
     return { time: v.currentTime, width: v.videoWidth, height: v.videoHeight, error: v.error?.message };
   })()`);
   assert(played.time > 0.5 && played.width === 640 && played.height === 360, JSON.stringify(played));
