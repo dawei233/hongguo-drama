@@ -100,6 +100,12 @@ export default function PlayerControls({ danmaku, danmakuSource = 'comments', on
     window.addEventListener('pointercancel', stopDrag);
     const onBlur = () => { episodeKeysRef.current.clear(); stopDrag(); };
     window.addEventListener('blur', onBlur);
+    // 窗口重新获得焦点时也唤醒控制条。
+    // 为什么需要：窗口失焦期间（用户去点别的程序），本窗口收不到 pointermove，
+    // 用户切回来后如果指针恰好没再移动，控制条会一直不可见、给人一种"坏了"的感觉。
+    // 这条兜底与全屏实现无关，无论哪种全屏都成立。
+    const onWindowFocus = () => reveal();
+    window.addEventListener('focus', onWindowFocus);
     // Source changes and automatic handoffs are not user activity.
     if (menuOpen || danmakuOpen || (!continuing && !available)) reveal();
     else if (!continuing && media.paused && !(media.ended && autoContinue)) {
@@ -121,6 +127,7 @@ export default function PlayerControls({ danmaku, danmakuSource = 'comments', on
       window.removeEventListener('pointerup', stopDrag);
       window.removeEventListener('pointercancel', stopDrag);
       window.removeEventListener('blur', onBlur);
+      window.removeEventListener('focus', onWindowFocus);
     };
   }, [portrait, expanded, available, media.paused, media.ended, continuing, autoContinue, menuOpen, danmakuOpen, source, stageRef, shortcuts]);
 
