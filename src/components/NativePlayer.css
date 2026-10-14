@@ -128,7 +128,9 @@ body.fs-mode .player-stage {
 body.fs-mode .player-video { width: 100%; height: 100%; object-fit: contain; }
 
 /* ══ 本仓库独有：控制条里多出来的按钮/面板（源没有这些功能） ════════════════
-   以下规则由原 PlayerControls.css 迁入；只保留源选择器覆盖不到的部分。 */
+   以下规则原来在 PlayerControls.css；该文件已删除 —— 它当时已无任何 import、也不在构建产物里，
+   却残留着废弃的 `.controls-hidden` 与 `transition:opacity .18s`（正是"过渡卡住导致控制条
+   点得到却看不见"那条规则），留着会让人误以为仍在生效。这里只保留源选择器覆盖不到的部分。 */
 .native-player .player-controls-options { position: relative; }
 .native-player .player-controls-menu { position: absolute; bottom: calc(100% + 12px); right: 0; width: 216px; padding: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-elevated); color: var(--text-primary); box-shadow: 0 4px 22px rgba(0, 0, 0, .22); max-height: min(70vh, 480px); overflow-y: auto; overscroll-behavior: contain; }
 .native-player .player-controls-menu label { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; }

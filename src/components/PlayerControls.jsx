@@ -92,12 +92,34 @@ export function releaseAutoHideCtrls() {
 }
 
 /**
+ * 内部清场：摘监听、清定时器、清类名。**不清 `_autoHideHold`**。
+ *
+ * 拆出来是必要的：`attachAutoHideCtrls()` 需要幂等（先清场再挂），但它不能清掉
+ * 尚未释放的 hold —— 否则"面板打开期间发生全屏变化"（Alt+Enter / F11 / 主进程广播）
+ * 会把那次 hold 静默丢掉，面板仍开着却跟着控制条一起消失。
+ * 归零 hold 只属于「退出全屏」那条语义，因此只放在导出的 detach 里。
+ */
+function teardownAutoHideCtrls() {
+  if (_autoHideTimer) { clearTimeout(_autoHideTimer); _autoHideTimer = null; }
+  if (_autoHideHandler) {
+    document.removeEventListener?.('mousemove', _autoHideHandler);
+    document.removeEventListener?.('keydown', _autoHideHandler);
+    document.removeEventListener?.('wheel', _autoHideHandler);
+    document.removeEventListener?.('mousedown', _autoHideHandler);
+    _autoHideHandler = null;
+  }
+  document.body?.classList?.remove('pv-active');
+  document.querySelector?.('.ctrl-bar')?.classList.remove('fs-show');
+  document.querySelector?.('.dl-text')?.classList.remove('fs-show');
+}
+
+/**
  * 全屏下自动隐藏播放器控件：鼠标活动显示，3s 无操作隐藏
- * （topbar 全屏时直接 display:none，不参与这里的显隐）
+ * （topbar 全屏时由 `body.fs-mode` 直接隐藏，不参与这里的显隐）
  */
 export function attachAutoHideCtrls() {
-  detachAutoHideCtrls();
-  document.body?.classList?.add('pv-active'); // 标记播放器页全屏，CSS 据此隐藏 topbar
+  teardownAutoHideCtrls();
+  document.body?.classList?.add('pv-active');
   const show = () => {
     document.querySelector?.('.ctrl-bar')?.classList.add('fs-show');
     document.querySelector?.('.dl-text')?.classList.add('fs-show');
@@ -117,21 +139,10 @@ export function attachAutoHideCtrls() {
   document.addEventListener?.('mousedown', show);
 }
 
+/** 退出全屏：清场并把"保持显示"计数归零，避免下次进入全屏时控制条再也不自动隐藏。 */
 export function detachAutoHideCtrls() {
-  if (_autoHideTimer) { clearTimeout(_autoHideTimer); _autoHideTimer = null; }
-  // 摘除时把"保持显示"计数一并归零：否则退出全屏后计数会残留，
-  // 下次进入全屏时控制条就再也不自动隐藏了。
+  teardownAutoHideCtrls();
   _autoHideHold = 0;
-  if (_autoHideHandler) {
-    document.removeEventListener?.('mousemove', _autoHideHandler);
-    document.removeEventListener?.('keydown', _autoHideHandler);
-    document.removeEventListener?.('wheel', _autoHideHandler);
-    document.removeEventListener?.('mousedown', _autoHideHandler);
-    _autoHideHandler = null;
-  }
-  document.body?.classList?.remove('pv-active');
-  document.querySelector?.('.ctrl-bar')?.classList.remove('fs-show');
-  document.querySelector?.('.dl-text')?.classList.remove('fs-show');
 }
 
 export default function PlayerControls({

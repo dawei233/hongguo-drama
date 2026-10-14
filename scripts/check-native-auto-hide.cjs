@@ -237,6 +237,19 @@ try {
   advance(HIDE_DELAY);
   assert.ok(!bar.contains('fs-show'), 'detach 必须归零持有计数：重新进入全屏后 3 秒规则必须照常生效');
   detach();
+
+  // 回归：面板打开期间若发生一次全屏状态变化（Alt+Enter / F11 / 主进程 window-fullscreen-changed
+  // 广播都会触发 attach），那次 hold **不得被丢掉**。
+  // attach 原先以 detach 开头，而 detach 会把持有计数归零 → 计数被清、面板还开着却跟着控制条一起
+  // 隐藏。修法是把清场拆成内部 teardown（不清计数），attach 只调 teardown。
+  attach(); hold(); attach();
+  advance(5 * HIDE_DELAY);
+  assert.ok(bar.contains('fs-show'), '全屏状态变化后被重新 attach，也不能丢掉未释放的 hold');
+  assert.equal(timers.size, 0, '被 hold 期间不得因为重新 attach 而排出隐藏定时器');
+  release();
+  advance(HIDE_DELAY);
+  assert.ok(!bar.contains('fs-show'), '释放后仍应恢复 3 秒隐藏规则');
+  detach();
   // 未 attach / 计数为 0 时调用都不得抛错（Player.jsx 的调用时机不受面板状态约束）
   assert.doesNotThrow(() => { release(); release(); }, '计数为 0 时 release 不得抛错');
   assert.doesNotThrow(() => { hold(); release(); }, '未 attach 时 hold/release 不得抛错');
