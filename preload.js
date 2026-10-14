@@ -52,6 +52,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('fullscreen-pointer-move', listener);
     return () => ipcRenderer.removeListener('fullscreen-pointer-move', listener);
   },
+  // 指针唤出诊断上报（临时设施，与 PlayerControls 里同名注释、以及主进程的
+  // 'pointer-diag' 处理配套；定位完成后三处一并移除）
+  reportPointerDiag: (payload) => ipcRenderer.invoke('pointer-diag', payload).catch(() => {}),
 
   // 在线播放（内存或临时磁盘缓存 + 自定义流协议）
   prepareOnlinePlay: (payload) => ipcRenderer.invoke('prepare-online-play', payload),

@@ -41,7 +41,33 @@ export default function PlayerControls({ danmaku, danmakuSource = 'comments', on
   const speedRef = useRef(null);
   const episodeKeysRef = useRef(new Set());
   const pointerRef = useRef(null);
+  // 指针唤出诊断计数（临时设施，见下方上报用的 useEffect）。
+  const diagRef = useRef({ pointermove: 0, mousemove: 0, poll: 0, activity: 0, focus: 0, blur: 0 });
   const expanded = fullscreen || windowFill;
+
+  // ── 指针唤出诊断上报（临时设施）───────────────────────────────────────────
+  // 背景：副屏全屏下"控制条唤不出"在开发机上无法复现（本地没有显示器），
+  // 只能靠真机数据判断断点在哪一环。每 2 秒把计数追加到主进程的日志文件，
+  // 事后读取即可区分：
+  //   pointermove / mousemove = 渲染层实际收到的 DOM 指针事件数
+  //                             （在窗口失焦期间若为 0，说明事件根本没到渲染层）
+  //   poll                    = 主进程轮询送达渲染层的次数（0 说明轮询没上报或接口没接上）
+  //   focus / blur            = 窗口焦点变化次数
+  //   activity                = document 上的点击/滚轮次数
+  // 定位完成后整体移除（包括 preload 与主进程侧的写文件逻辑）。
+  useEffect(() => {
+    const report = window.electronAPI?.reportPointerDiag;
+    if (!report) return;
+    const id = setInterval(() => {
+      report({
+        ...diagRef.current,
+        focused: document.hasFocus(),
+        expanded: !!document.querySelector('.app-layout.player-fullscreen'),
+        hidden: !!document.querySelector('.player-controls.controls-hidden'),
+      });
+    }, 2000);
+    return () => clearInterval(id);
+  }, []);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -91,15 +117,28 @@ export default function PlayerControls({ danmaku, danmakuSource = 'comments', on
       reveal();
     };
     const onPointerMove = event => {
+      diagRef.current[event.type === 'pointermove' ? 'pointermove' : 'mousemove']++;
       const previous = pointerRef.current;
       pointerRef.current = { x: event.screenX, y: event.screenY };
-      // Native fullscreen/source changes can dispatch a move without moving the pointer.
-      if (previous ? previous.x === event.screenX && previous.y === event.screenY : !event.movementX && !event.movementY) return;
+      // 判断"这次事件是否代表指针真的动了"。两个信号取**或**，只要有一个表明动了就唤出。
+      //
+      // 只用 screenX/screenY 去重是"主屏正常、副屏失效"的原因：副屏是 1080x1920 竖屏、
+      // 位于 x 负半轴、缩放 1.0（主屏 1.5），这正是 screenX/screenY 最容易不可靠的配置。
+      // 一旦这两个值不随移动变化，原先的判据会把所有真实移动都当成静止、直接 return，
+      // 控制条于是永远唤不出，只能按 Esc。
+      // movementX/movementY 是相对增量，不受该问题影响。
+      //
+      // 只有两个信号**同时**表明没动才跳过（合成事件、切源时的假移动），
+      // 这样上游"静止的合成事件不得唤出控制条"的既有行为仍然成立。
+      const screenUnchanged = previous
+        && previous.x === event.screenX && previous.y === event.screenY;
+      const noMovement = !event.movementX && !event.movementY;
+      if (noMovement && (screenUnchanged || !previous)) return;
       reveal();
     };
     const startDrag = event => { dragging = !!event.target.closest?.('input[type="range"]'); reveal(); };
     // 明确的用户操作（点击/滚轮）：直接唤出，不经屏幕坐标去重。
-    const onActivity = () => reveal();
+    const onActivity = event => { diagRef.current.activity++; void event; reveal(); };
     const stopDrag = () => { if (dragging) { dragging = false; reveal(); } };
     const onFocus = event => {
       // Tab and pointerdown reveal immediately; media focus churn is not user activity.
@@ -114,7 +153,7 @@ export default function PlayerControls({ danmaku, danmakuSource = 'comments', on
     // 副屏全屏 → 控制条隐藏 → 去别的屏点别的程序 → 回来只移动鼠标（不点击，窗口因此
     // 不会重新获得焦点）→ 控制条再也唤不出，只能按 Esc。
     // 轮询不读 DOM、不依赖焦点，所以这个场景能兜住。
-    const offFullscreenPointer = window.electronAPI?.onFullscreenPointerMove?.(() => reveal());
+    const offFullscreenPointer = window.electronAPI?.onFullscreenPointerMove?.(() => { diagRef.current.poll++; reveal(); });
     stage?.addEventListener('pointermove', onPointerMove);
     stage?.addEventListener('pointerdown', startDrag);
     stage?.addEventListener('focusin', onFocus);
@@ -137,10 +176,10 @@ export default function PlayerControls({ danmaku, danmakuSource = 'comments', on
     window.addEventListener('pointerup', stopDrag);
     window.addEventListener('pointercancel', stopDrag);
     // 失焦：清掉按键状态、结束拖动（控制条仍按既有规则自动隐藏，不做特例）。
-    const onBlur = () => { episodeKeysRef.current.clear(); stopDrag(); };
+    const onBlur = () => { diagRef.current.blur++; episodeKeysRef.current.clear(); stopDrag(); };
     window.addEventListener('blur', onBlur);
     // 重新获得焦点：把控制条显出来（用户切回来即可见，随后按闲置规则自动隐藏）。
-    const onWindowFocus = () => reveal();
+    const onWindowFocus = () => { diagRef.current.focus++; reveal(); };
     window.addEventListener('focus', onWindowFocus);
     // Source changes and automatic handoffs are not user activity.
     if (menuOpen || danmakuOpen || (!continuing && !available)) reveal();

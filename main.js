@@ -3498,6 +3498,27 @@ const stealth = createStealthController({ screen, getWindow: () => mainWindow })
 // 可忽略，换来的是"不依赖任何事件时序"。
 const fullscreenPointer = createFullscreenPointerController({ screen, getWindow: () => mainWindow });
 fullscreenPointer.setEnabled(true);
+// 指针唤出诊断（临时设施）：把渲染层上报的计数与主进程自己的轮询计数追加到日志文件。
+// 背景见 src/components/PlayerControls.jsx 里同名注释 —— 副屏问题无法在开发机复现，
+// 只能靠真机日志判断是"事件没到渲染层"还是"轮询没上报"还是"状态没生效"。
+// 定位完成后与 preload 的 reportPointerDiag、渲染层的上报 effect 一并移除。
+const pointerDiagFile = () => path.join(app.getPath('userData'), 'pointer-diag.log');
+// 用 handle（而不是 on/send）是有意的：本仓库大量测试夹具只桩了 ipcMain.handle，
+// 用 on 会让那些夹具报 "ipcMain.on is not a function"。保持与既有用法一致，
+// 既不改十几个夹具，也少一类脆弱点。
+ipcMain.handle('pointer-diag', (event, payload) => {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return false;
+  try {
+    const file = pointerDiagFile();
+    const line = `${new Date().toISOString()} ${JSON.stringify({ ...payload, mainPollSent: fullscreenPointer.sent, isFullScreen: mainWindow.isFullScreen() })}\n`;
+    // 只保留最近 300 行，避免长期运行时无限增长
+    let existing = '';
+    try { existing = fs.readFileSync(file, 'utf8'); } catch { /* 首次写入 */ }
+    const lines = (existing + line).split('\n').filter(Boolean).slice(-300);
+    fs.writeFileSync(file, lines.join('\n') + '\n');
+  } catch { /* 诊断写入失败不影响功能 */ }
+  return true;
+});
 ipcMain.handle('set-stealth-mode', async (event, enabled) => {
   if (!mainWindow || event.sender !== mainWindow.webContents || typeof enabled !== 'boolean') return { success: false, error: '无法切换小窗' };
   if (enabled && (mainWindow.isFullScreen() || layoutChanging)) return { success: false, error: '请先退出全屏，再开启隐身小窗' };

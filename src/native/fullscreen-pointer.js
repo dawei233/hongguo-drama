@@ -26,10 +26,15 @@
  *
  * ## 行为
  *
- * 定时器常驻运行，但**只有窗口处于全屏、且指针在窗口内发生位移时**才向渲染层上报。
- * 是否上报由每次 tick 读 `win.isFullScreen()` 决定，而不是靠外部用事件来启停 ——
- * 那样一旦事件接线有偏差（例如 DOM 全屏走的是 enter-html-full-screen）轮询会静默失效，
- * 症状与"没修"完全一样，很难排查。不读 DOM、不依赖焦点，因此失焦场景同样有效。
+ * 定时器常驻运行；指针在窗口所在的那一屏上发生位移时，就向渲染层上报一次。
+ *
+ * **刻意不判断全屏状态**。曾经用 `win.isFullScreen()` 作为门槛，但竖屏布局下播放器
+ * "全屏"走的是前端的 setWindowFill（CSS 模式），窗口并不是 Electron 的原生全屏，
+ * `isFullScreen()` 为 false —— 轮询因此一次都不上报，与"完全没修"的症状一模一样。
+ * 用户的副屏正是 1080x1920 竖屏，很容易落进这条路径。现在不再设这个门槛：
+ * 渲染层本来就只在播放页挂监听，多上报几次不会造成可见影响，却消除了整类失效可能。
+ *
+ * 不读 DOM、不依赖焦点，因此窗口失焦时同样有效。
  */
 
 // 轮询间隔：与 stealth-window.js 保持一致（100ms 量级）。这个频率足以让控制条跟手，
@@ -40,19 +45,33 @@ function createFullscreenPointerController({ screen, getWindow, intervalMs = DEF
   let timer = null;
   let enabled = false;
   let last = null;
+  let sent = 0;
+
+  // 光标是否落在窗口这一屏上。
+  // 优先用"是否同一块显示器"判断：getCursorScreenPoint 与 getDisplayMatching 都出自
+  // Electron 的 screen 模块，坐标空间一致，比手写 bounds 比较更耐受**混合 DPI 与负坐标
+  // 显示器**（用户的副屏是 1080x1920 竖屏、位于 x 负半轴、缩放 1.0，而主屏缩放 1.5）。
+  const overWindow = (point, win) => {
+    try {
+      const here = screen.getDisplayNearestPoint(point);
+      const own = screen.getDisplayMatching(win.getBounds());
+      if (here && own) return here.id === own.id;
+    } catch { /* 退回 bounds 比较 */ }
+    const b = win.getBounds();
+    return point.x >= b.x && point.x < b.x + b.width && point.y >= b.y && point.y < b.y + b.height;
+  };
 
   const tick = () => {
     const win = getWindow();
     if (!win || win.isDestroyed()) return;
-    // 只在全屏时上报：非全屏下 DOM 指针事件本来就是好的，没必要走这条通道。
-    if (!win.isFullScreen()) return;
-    const point = screen.getCursorScreenPoint();
-    const bounds = win.getBounds();
-    const inside = point.x >= bounds.x && point.x < bounds.x + bounds.width
-      && point.y >= bounds.y && point.y < bounds.y + bounds.height;
+    let point;
+    // app 未 ready 时 screen 会抛错；也不要把异常打到控制台刷屏。
+    try { point = screen.getCursorScreenPoint(); } catch { return; }
     const moved = !last || last.x !== point.x || last.y !== point.y;
     last = { x: point.x, y: point.y };
-    if (!inside || !moved) return;
+    if (!moved) return;
+    if (!overWindow(point, win)) return;
+    sent++;
     win.webContents.send('fullscreen-pointer-move');
   };
 
@@ -78,6 +97,7 @@ function createFullscreenPointerController({ screen, getWindow, intervalMs = DEF
     setEnabled,
     dispose: () => { enabled = false; stop(); },
     get enabled() { return enabled; },
+    get sent() { return sent; },
   };
 }
 
