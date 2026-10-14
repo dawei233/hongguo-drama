@@ -7,6 +7,12 @@ const { execFileSync, spawn } = require('node:child_process');
 const { createHash } = require('node:crypto');
 const pkg = require('../package.json');
 const root = path.resolve(__dirname, '..');
+
+// 控制条"无操作自动隐藏"的延时由产品决定：播放器移植后改用源实现的 3000ms
+// （旧实现是 2000ms 的 React 定时器）。用命名常量，避免以后改动产品延时时
+// 门禁的等待时长悄悄漂移；留 400ms 余量覆盖渲染与定时器抖动。
+const HIDE_DELAY_MS = 3000;
+const IDLE_WAIT_MS = HIDE_DELAY_MS + 400;
 const out = path.join(root, 'dist/windows-verification');
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'hongguo-windows-'));
 const packaged = path.join(root, 'dist/win-unpacked');
@@ -249,7 +255,7 @@ async function keyHandoff(key, code, expectedSource) {
   }
   await clickControl('播放');
   await cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 100, y: 100 });
-  await delay(2400);
+  await delay(IDLE_WAIT_MS);
   const hidden = await evaluate('getComputedStyle(document.querySelector(".player-controls")).opacity === "0" && getComputedStyle(document.querySelector(".player-controls")).pointerEvents === "none" && !document.querySelector("video").paused');
   assert(hidden, 'Fullscreen playback must hide idle controls');
   const fullscreenScreenshot = await cdp('Page.captureScreenshot', { format: 'png' });
@@ -258,11 +264,11 @@ async function keyHandoff(key, code, expectedSource) {
   await delay(250);
   assert(await evaluate('getComputedStyle(document.querySelector(".player-controls")).opacity === "1"'), 'Pointer movement must restore fullscreen controls');
   await clickControl('暂停');
-  await delay(2400);
+  await delay(IDLE_WAIT_MS);
   assert(await evaluate('document.querySelector("video").paused && getComputedStyle(document.querySelector(".player-controls")).opacity === "1"'), 'Paused fullscreen controls must stay visible');
   await clickControl('播放');
   await cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 100, y: 100 });
-  await delay(2400);
+  await delay(IDLE_WAIT_MS);
   assert(await evaluate('getComputedStyle(document.querySelector(".player-controls")).opacity === "0"'), 'Resumed fullscreen playback must hide idle controls again');
   const firstSource = await evaluate('document.querySelector("video").currentSrc');
   result.shortcutHandoffs = [];
@@ -322,7 +328,7 @@ async function keyHandoff(key, code, expectedSource) {
   assert(await evaluate('getComputedStyle(document.querySelector(".player-controls")).opacity === "1"'), 'Pointer movement after automatic next episode must restore controls');
   result.checks.push('Actual single-file EXE: after default ArrowUp returns to the previous episode, natural ended advances through Player to the expected second local flower episode; every sampled frame retains hidden controls and fullscreen; pointer movement restores controls');
   await clickControl('退出全屏');
-  await delay(2400);
+  await delay(IDLE_WAIT_MS);
   assert(await evaluate('!document.body.classList.contains("fs-mode") && !document.querySelector("video").paused && getComputedStyle(document.querySelector(".player-controls")).opacity === "0"'), 'Ordinary landscape must hide idle controls after exiting fullscreen');
   result.fullscreenControls = { idleHidden: true, pointerRestores: true, pausedVisible: true, resumedHidden: true, landscapeIdleHidden: true };
   result.checks.push('Actual single-file EXE: fullscreen and ordinary landscape idle hide controls; pointer restores; pause keeps visible; resume hides');
