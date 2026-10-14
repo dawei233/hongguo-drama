@@ -74,7 +74,14 @@ function fixture({ wrongVid = false, fallback = 'https://vod.snssdk.com/info', m
 function nativeFixture() {
   const pending = [];
   const context = { module: { exports: {} }, Buffer, URL, process: { env: {} },
-    require: name => name === 'axios' ? { get: () => new Promise(resolve => pending.push(resolve)) } : require(name.startsWith('.') ? path.join(nativeDir, name) : name),
+    require: name => {
+      if (name === 'axios') return { get: () => new Promise(resolve => pending.push(resolve)) };
+      // 取源顺序已改为 App 优先、web 兜底。本夹具只提供 axios.get，没有 App 路径所需的
+      // axios(config) 调用形式，所以让 App 确定性失败、把控制流交回 web ——
+      // 下面这两条用例验证的本来就是**web 兜底路径**的 force / 在途缓存语义。
+      if (name === './app-source') return { fetchAppPlayUrl: async () => { throw new Error('App 片源在本夹具中不可用'); } };
+      return require(name.startsWith('.') ? path.join(nativeDir, name) : name);
+    },
   };
   vm.runInNewContext(fs.readFileSync(path.join(nativeDir, 'hongguo.js'), 'utf8') + '\nmodule.exports.parseModelVideo = parseModelVideo;', context);
   return { ...context.module.exports, pending,
@@ -198,6 +205,24 @@ const checks = [
     await assert.rejects(fetch('../11'));
     assert.equal(calls.length, 0);
     await assert.rejects(fixture({ malformedKey: true }).fetch('11'));
+  }],
+  ['App media candidates never carry a Referer (403 regression guard)', async () => {
+    // 回归护栏：实测给 qznovelvod 系片源带 Referer: https://novelquickapp.com/ 会稳定
+    // 返回 403，去掉即 200 —— 这正是"播放老是 403"的根因。这里同时用行为断言（每条候选
+    // 都必须没有 referer）和调用断言（取媒体时不得把 Referer 传出去）把它钉死。
+    const { fetch, calls } = fixture();
+    const result = await fetch('11');
+    assert.ok(result.url, '本夹具应能取到片源');
+    assert.equal(result.referer, undefined, '主候选不得携带 Referer');
+    assert.ok(Array.isArray(result.variants) && result.variants.length > 0, '应保留候选列表');
+    for (const candidate of result.variants) {
+      assert.equal(candidate.referer, undefined, `候选 ${candidate.url} 不得携带 Referer`);
+    }
+    // 用真实 media 请求路径验证：main.js 只在 playInfo.referer 存在时才加 Referer 头，
+    // 所以没有 referer 字段等价于"不会发出 Referer"。
+    const mediaCall = calls.filter(call => call.method !== 'POST').at(-1);
+    assert.ok(mediaCall, '应发生过取媒体的请求');
+    assert.equal(mediaCall.headers?.Referer, undefined, '取媒体时不得带 Referer');
   }],
 ];
 (async () => {
